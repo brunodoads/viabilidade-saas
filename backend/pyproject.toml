@@ -1,0 +1,72 @@
+[tool.poetry]
+name = "viabilidade-saas"
+version = "0.1.0"
+description = "SaaS de inteligência comercial para análise de viabilidade no Mercado Livre"
+authors = ["Bruno <bruno.costa110586@gmail.com>"]
+readme = "README.md"
+packages = [{ include = "app" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+# Web framework
+fastapi = "^0.115.0"
+uvicorn = { extras = ["standard"], version = "^0.32.0" }
+python-multipart = "^0.0.18"
+
+# Database
+sqlalchemy = "^2.0.36"
+alembic = "^1.14.0"
+psycopg2-binary = "^2.9.10"
+
+# Validation & Settings
+pydantic = "^2.10.0"
+pydantic-settings = "^2.6.0"
+
+# Auth
+python-jose = { extras = ["cryptography"], version = "^3.3.0" }
+passlib = { extras = ["bcrypt"], version = "^1.7.4" }
+bcrypt = "3.2.2"
+
+# Task queue
+celery = { extras = ["redis"], version = "^5.4.0" }
+redis = "^5.2.0"
+
+# HTTP client
+httpx = "^0.28.0"
+
+# AI
+anthropic = "^0.40.0"
+
+# File parsing
+openpyxl = "^3.1.5"
+pandas = "^2.2.0"
+pymupdf = "^1.24.0"          # PDF parsing (fitz)
+email-validator = "^2.3.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.0"
+pytest-cov = "^6.0.0"
+httpx = "^0.28.0"            # For TestClient
+black = "^24.10.0"
+ruff = "^0.8.0"
+mypy = "^1.13.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true

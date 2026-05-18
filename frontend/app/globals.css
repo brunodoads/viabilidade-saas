@@ -1,0 +1,12 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    border-color: hsl(214.3 31.8% 91.4%);
+  }
+  body {
+    @apply bg-gray-50 text-gray-900 antialiased;
+  }
+}
