@@ -222,44 +222,14 @@ def _parse_csv(file_path: Path) -> ParseResult:
 
 def _parse_pdf(file_path: Path) -> ParseResult:
     """
-    Parser PDF básico — extração de texto simples.
-    Limitado a PDFs com texto digital (não escaneados).
-    Fase 2: extração inteligente com Claude API.
+    Parser PDF híbrido — dois estágios:
+    1. pdfplumber: tabelas digitais (rápido, sem custo de API)
+    2. Claude Vision: PDFs escaneados ou layouts complexos
+
+    Delega para pdf_parser.parse_pdf_catalog().
     """
-    from app.services.parse_result import ParseResult
-
-    result = ParseResult()
-    result.add_warning(
-        "PDF parsing é limitado no MVP. "
-        "Para melhores resultados, converta para XLSX antes de enviar."
-    )
-
-    try:
-        import fitz  # PyMuPDF
-    except ImportError:
-        result.add_error("PyMuPDF não instalado. PDF não pode ser processado.")
-        result.confidence = ParseConfidence.FAILED
-        return result
-
-    doc = fitz.open(str(file_path))
-    all_text = "".join(page.get_text("text") for page in doc)
-    doc.close()
-
-    if not all_text.strip():
-        result.add_error(
-            "PDF não contém texto extraível (possivelmente escaneado). "
-            "Suporte a PDF escaneado está planejado para Fase 2."
-        )
-        result.confidence = ParseConfidence.FAILED
-        return result
-
-    # TODO Fase 2: usar Claude API para estruturar o texto do PDF
-    result.add_error(
-        "Parser de PDF ainda não implementado para extração estruturada. "
-        "Converta o catálogo para XLSX."
-    )
-    result.confidence = ParseConfidence.FAILED
-    return result
+    from app.services.pdf_parser import parse_pdf_catalog
+    return parse_pdf_catalog(file_path)
 
 
 # ── Utilitários ───────────────────────────────────────────────────────────────

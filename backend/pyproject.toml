@@ -41,7 +41,8 @@ anthropic = "^0.40.0"
 # File parsing
 openpyxl = "^3.1.5"
 pandas = "^2.2.0"
-pymupdf = "^1.24.0"          # PDF parsing (fitz)
+pymupdf = "^1.24.0"          # PDF parsing (fitz) + imagens para Claude Vision
+pdfplumber = "^0.11.0"      # Extração de tabelas de PDFs digitais
 email-validator = "^2.3.0"
 
 [tool.poetry.group.dev.dependencies]
