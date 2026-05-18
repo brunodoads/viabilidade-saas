@@ -11,11 +11,16 @@ import { formatDate } from '@/lib/utils'
 import { FileSpreadsheet, FilePlus, ChevronRight } from 'lucide-react'
 import Link from 'next/link'
 
-const STATUS_CONFIG = {
-  PENDING:    { label: 'Na fila',        variant: 'gray' as const },
-  PROCESSING: { label: 'Processando',    variant: 'info' as const },
-  READY:      { label: 'Pronto',         variant: 'success' as const },
-  ERROR:      { label: 'Erro',           variant: 'danger' as const },
+type BadgeVariant = 'gray' | 'info' | 'success' | 'danger'
+
+const STATUS_CONFIG: Record<string, { label: string; variant: BadgeVariant }> = {
+  PENDING:     { label: 'Na fila',         variant: 'gray' },
+  PARSING:     { label: 'Lendo arquivo',   variant: 'info' },
+  RESEARCHING: { label: 'Pesquisando ML',  variant: 'info' },
+  ANALYZING:   { label: 'Calculando',      variant: 'info' },
+  SCORING:     { label: 'Pontuando',       variant: 'info' },
+  READY:       { label: 'Pronto',          variant: 'success' },
+  ERROR:       { label: 'Erro',            variant: 'danger' },
 }
 
 export default function DashboardPage() {
@@ -68,7 +73,7 @@ export default function DashboardPage() {
       {data && data.length > 0 && (
         <div className="space-y-3">
           {data.map((catalog) => {
-            const cfg = STATUS_CONFIG[catalog.status]
+            const cfg = STATUS_CONFIG[catalog.status] ?? { label: catalog.status, variant: 'gray' as BadgeVariant }
             return (
               <Link key={catalog.id} href={`/catalogs/${catalog.id}`}>
                 <Card className="hover:border-blue-200 hover:shadow transition-all cursor-pointer">
