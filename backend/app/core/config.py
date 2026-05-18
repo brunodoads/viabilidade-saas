@@ -37,19 +37,10 @@ class Settings(BaseSettings):
     MERCADOLIVRE_BASE_URL: str = "https://api.mercadolibre.com"
     MERCADOLIVRE_SITE_ID: str = "MLB"
 
-    # Credenciais OAuth — obter em https://developers.mercadolivre.com.br
-    # A busca pública (/sites/MLB/search?q=...) exige autenticação server-side.
-    # Use o fluxo "App Token" (sem usuário, apenas credenciais do app).
     ML_APP_ID: str = ""
     ML_CLIENT_SECRET: str = ""
-
-    # Throttle entre requisições — respeitar rate limit (~10 req/s sem app, mais com app)
     ML_REQUEST_DELAY_SECONDS: float = 0.5
-
-    # Máximo de retries por requisição antes de desistir
     ML_MAX_RETRIES: int = 3
-
-    # Confiança mínima do matching para incluir anúncio na análise
     ML_MIN_MATCH_CONFIDENCE: float = 0.60
 
     ML_FEE_PCT: float = 15.0
@@ -65,12 +56,15 @@ class Settings(BaseSettings):
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, v: Any) -> Any:
-        # Aceita string única ou lista separada por vírgula
         return v
 
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(',') if o.strip()]
+
+    @property
+    def max_upload_size_bytes(self) -> int:
+        return self.MAX_UPLOAD_SIZE_MB * 1024 * 1024
 
 
 settings = Settings()
