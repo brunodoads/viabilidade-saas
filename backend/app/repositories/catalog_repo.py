@@ -19,8 +19,10 @@ class CatalogRepository(BaseRepository[Catalog]):
             .all()
         )
 
+    def get_by_id(self, catalog_id: uuid.UUID) -> Catalog | None:
+        return self.db.query(Catalog).filter(Catalog.id == catalog_id).first()
+
     def get_by_id_and_user(self, catalog_id: uuid.UUID, user_id: uuid.UUID) -> Catalog | None:
-        """Busca catálogo garantindo que pertence ao usuário (segurança MVP)."""
         return (
             self.db.query(Catalog)
             .filter(Catalog.id == catalog_id, Catalog.user_id == user_id)
@@ -33,6 +35,7 @@ class CatalogRepository(BaseRepository[Catalog]):
         original_filename: str,
         file_path: str,
         file_type: FileType,
+        file_content: bytes | None = None,
     ) -> Catalog:
         catalog = Catalog(
             user_id=user_id,
@@ -40,14 +43,12 @@ class CatalogRepository(BaseRepository[Catalog]):
             file_path=file_path,
             file_type=file_type,
             status=CatalogStatus.PENDING,
+            file_content=file_content,
         )
         return self.save(catalog)
 
     def update_status(
-        self,
-        catalog: Catalog,
-        status: CatalogStatus,
-        error_message: str | None = None,
+        self, catalog: Catalog, status: CatalogStatus, error_message: str | None = None,
     ) -> Catalog:
         catalog.status = status
         if error_message is not None:
@@ -55,10 +56,7 @@ class CatalogRepository(BaseRepository[Catalog]):
         return self.save(catalog)
 
     def update_progress(
-        self,
-        catalog: Catalog,
-        total_products: int,
-        processed_products: int,
+        self, catalog: Catalog, total_products: int, processed_products: int,
     ) -> Catalog:
         catalog.total_products = total_products
         catalog.processed_products = processed_products
