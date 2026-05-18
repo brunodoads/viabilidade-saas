@@ -147,15 +147,29 @@ def _try_pdfplumber(file_path: Path) -> "ParseResult":
         if not table or len(table) < 2:
             continue
 
-        # Primeira linha como cabeçalho
-        headers = [str(h).strip() if h else "" for h in table[0]]
+        # Detectar linha do cabeçalho (pode não ser a linha 0 em PDFs complexos)
+        from app.services.column_detector import detect_header_row
+        header_row_idx, _confidence = detect_header_row(table, max_scan=min(5, len(table)))
+
+        headers = [str(h).strip() if h else "" for h in table[header_row_idx]]
 
         col_mapping = detect_columns(headers)
         if not col_mapping.has_required_columns:
-            continue
+            # Se a linha 0 falhou e detect escolheu outra, tentar linha 0 também
+            if header_row_idx != 0:
+                headers_row0 = [str(h).strip() if h else "" for h in table[0]]
+                col_mapping_0 = detect_columns(headers_row0)
+                if col_mapping_0.has_required_columns:
+                    col_mapping = col_mapping_0
+                    header_row_idx = 0
+                    headers = headers_row0
+                else:
+                    continue
+            else:
+                continue
 
         best_col_mapping = col_mapping
-        data_rows = table[1:]
+        data_rows = table[header_row_idx + 1:]
 
         for row in data_rows:
             stats.total_rows_scanned += 1
@@ -198,9 +212,17 @@ def _try_pdfplumber(file_path: Path) -> "ParseResult":
             break  # Encontrou produtos — não precisa tentar outras tabelas
 
     if not products_found:
+        # Coletar todos os cabeçalhos encontrados para diagnóstico
+        all_headers_seen: list[str] = []
+        for tbl in all_tables:
+            if tbl and tbl[0]:
+                all_headers_seen.extend([str(h).strip() for h in tbl[0] if h])
+
+        headers_str = ", ".join(f'"{h}"' for h in all_headers_seen[:20]) if all_headers_seen else "nenhum"
         result.add_error(
-            "pdfplumber encontrou tabelas mas nenhum produto válido (nome + custo). "
-            "Colunas obrigatórias podem ter nomes não reconhecidos."
+            f"pdfplumber encontrou tabelas mas nenhum produto válido (nome + custo). "
+            f"Cabeçalhos detectados: [{headers_str}]. "
+            "Se os cabeçalhos estiverem corretos, reporte para adicionar ao vocabulário."
         )
         result.confidence = ParseConfidence.FAILED
         return result
@@ -227,18 +249,20 @@ Sua tarefa é analisar a imagem de uma página de catálogo e extrair TODOS os p
 
 Para cada produto, extraia:
 - raw_name: nome do produto exatamente como aparece no catálogo (obrigatório)
-- cost: preço de custo como número decimal (obrigatório — use null se não encontrar)
-- sku: código/referência do produto (opcional, null se não encontrar)
-- category: categoria ou grupo do produto (opcional, null se não encontrar)
-- supplier: nome do fornecedor ou marca (opcional, null se não encontrar)
+- cost: QUALQUER valor monetário visível associado ao produto — pode ser "preço", "preço de venda", "valor", "vlr", "vl", "preço de tabela", "atacado", "custo" ou qualquer campo numérico com R$ (obrigatório — use o primeiro valor monetário que encontrar; null apenas se realmente não houver nenhum número de preço)
+- sku: código, referência, cód, cod, ref, SKU do produto (opcional, null se não encontrar)
+- category: categoria, grupo, linha, família do produto (opcional, null se não encontrar)
+- supplier: fornecedor, fabricante, marca (opcional, null se não encontrar)
 
-Regras:
+Regras IMPORTANTES:
 1. Retorne APENAS um JSON array de objetos, sem texto antes ou depois
 2. Se a página não tiver produtos, retorne []
-3. Preços devem ser números: 49.90 (não "R$ 49,90")
-4. Converta vírgula decimal BR: "49,90" → 49.90 e "1.234,56" → 1234.56
-5. Ignore totais, subtotais, cabeçalhos de seção e rodapés de página
-6. Inclua todos os produtos, mesmo os parcialmente visíveis
+3. Preços devem ser números Python: 49.90 (NÃO strings como "R$ 49,90")
+4. Converta formato BR obrigatoriamente: "49,90" → 49.90 | "1.234,56" → 1234.56
+5. Para "cost", use QUALQUER coluna de valor monetário — em catálogos de distribuidoras, "preço de venda" É o preço que o comprador paga
+6. Ignore linhas de total, subtotal, cabeçalhos de seção e rodapés
+7. Inclua todos os produtos visíveis, mesmo os parcialmente cortados
+8. Se um produto aparecer com múltiplos preços (custo + venda), use o MENOR (mais provável ser custo)
 
 Exemplo de resposta:
 [
@@ -430,55 +454,4 @@ def _extract_products_from_page(
                             "source": {
                                 "type": "base64",
                                 "media_type": "image/png",
-                                "data": image_b64,
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": (
-                                f"Extraia todos os produtos desta página "
-                                f"(página {page_number} do catálogo)."
-                            ),
-                        },
-                    ],
-                }
-            ],
-        )
-
-        raw_text = response.content[0].text.strip()
-
-        # Limpar markdown (```json ... ```) se presente
-        if "```" in raw_text:
-            parts = raw_text.split("```")
-            for part in parts:
-                part = part.strip()
-                if part.startswith("json"):
-                    raw_text = part[4:].strip()
-                    break
-                if part.startswith("["):
-                    raw_text = part
-                    break
-
-        products = json.loads(raw_text)
-
-        if not isinstance(products, list):
-            logger.warning(
-                "Claude Vision p%d: resposta não é lista — tipo=%s",
-                page_number, type(products).__name__,
-            )
-            return []
-
-        logger.info("Claude Vision | página=%d | %d produtos", page_number, len(products))
-        return products
-
-    except json.JSONDecodeError as exc:
-        logger.error("Claude Vision p%d: JSON decode error: %s", page_number, exc)
-        return []
-    except anthropic.APIError as exc:
-        logger.error("Claude Vision p%d: API error: %s", page_number, exc)
-        return []
-    except Exception as exc:
-        logger.error(
-            "Claude Vision p%d: erro inesperado: %s", page_number, exc, exc_info=True
-        )
-        return []
+                                

@@ -46,13 +46,18 @@ COLUMN_SYNONYMS: dict[str, list[str]] = {
         "product description", "article",
     ],
     "cost": [
-        # Compostos específicos
+        # Compostos específicos de custo
         "preco de custo", "preço de custo", "preco custo", "preço custo",
         "custo unitario", "custo unitário", "valor unitario", "valor unitário",
         "preco unitario", "preço unitário", "vl custo", "vlr custo",
         "vl unit", "vlr unit", "valor de custo",
         "preco de compra", "preço de compra",
         "custo de aquisicao", "custo de aquisição",
+        # Catálogos de distribuidoras: "preço de venda" do fornecedor = custo do comprador
+        "preco de venda", "preço de venda", "preco venda", "preço venda",
+        "vl venda", "vlr venda", "valor venda",
+        "preco tabela", "preço tabela", "tabela", "tab",
+        "preco atacado", "preço atacado", "atacado",
         # Simples
         "custo", "preco", "preço", "valor", "vl", "vlr",
         "r$", "reais",
@@ -94,9 +99,10 @@ COLUMN_SYNONYMS: dict[str, list[str]] = {
 }
 
 # Colunas que devem ser IGNORADAS (frequentes mas sem valor semântico)
+# ATENÇÃO: NÃO incluir aqui colunas de preço/valor, pois em catálogos de
+# distribuidoras o "preço de venda" DO FORNECEDOR é o custo do comprador.
 IGNORE_COLUMNS: set[str] = {
     "quantidade", "qty", "qtd", "estoque", "stock",
-    "preco de venda", "preço de venda", "venda", "sell price",
     "margem", "margin", "lucro", "profit",
     "total", "subtotal", "soma", "sum",
     "obs", "observacao", "observação", "nota", "note",
