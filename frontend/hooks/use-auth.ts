@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { login as apiLogin, ApiError } from '@/lib/api'
+import { login as apiLogin, register as apiRegister, ApiError } from '@/lib/api'
 import { setToken, clearToken } from '@/lib/auth'
 
 export function useSignIn() {
@@ -25,6 +25,28 @@ export function useSignIn() {
   }
 
   return { signIn, loading, error }
+}
+
+export function useSignUp() {
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function signUp(email: string, password: string, full_name: string) {
+    setLoading(true)
+    setError(null)
+    try {
+      await apiRegister(email, password, full_name)
+      const data = await apiLogin(email, password)
+      setToken(data.access_token)
+      window.location.href = '/dashboard'
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Erro ao criar conta')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return { signUp, loading, error }
 }
 
 export function useSignOut() {
