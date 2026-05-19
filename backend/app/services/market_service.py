@@ -51,9 +51,15 @@ def research_catalog(db: Session, products: list[Product]) -> int:
         logger.info("Market: autenticado no ML (OAuth App Token)")
     else:
         logger.warning(
-            "Market: sem token ML — buscas podem falhar com 403. "
-            "Configure ML_APP_ID e ML_CLIENT_SECRET no .env"
+            "Market: sem token ML — sold_quantity sera 0 em todos anuncios. "
+            "Usando min_sales=0 para nao filtrar tudo. "
+            "Configure ML_APP_ID e ML_CLIENT_SECRET para dados reais de vendas."
         )
+
+    # Sem autenticacao: ML nao retorna sold_quantity real (fica 0).
+    # Usar min_sales=0 para nao eliminar todos os anuncios.
+    # Com autenticacao: usar threshold configurado (ex: 1000).
+    effective_min_sales = settings.MIN_SALES_THRESHOLD if access_token else 0
 
     repo = MarketAnalysisRepository(db)
     processed = 0
@@ -68,6 +74,7 @@ def research_catalog(db: Session, products: list[Product]) -> int:
             market_data = _research_product(
                 product=product,
                 access_token=access_token,
+                effective_min_sales=effective_min_sales,
             )
 
             if market_data is None:
@@ -111,6 +118,7 @@ def research_catalog(db: Session, products: list[Product]) -> int:
 def _research_product(
     product: Product,
     access_token: str | None,
+    effective_min_sales: int = 0,
 ) -> dict | None:
     """
     Pesquisa um produto específico no ML e retorna estatísticas de mercado.
@@ -159,7 +167,7 @@ def _research_product(
     qualified, matches = filter_qualified_listings(
         catalog_name=search_name,
         listings=ml_result.listings,
-        min_sales=settings.MIN_SALES_THRESHOLD,
+        min_sales=effective_min_sales,
         min_confidence=settings.ML_MIN_MATCH_CONFIDENCE,
     )
 
@@ -177,6 +185,7 @@ def _research_product(
                 simplified_query=simplified,
                 access_token=access_token,
                 search_name=search_name,
+                effective_min_sales=effective_min_sales,
             )
         return None
 
@@ -218,6 +227,7 @@ def _retry_with_simplified_query(
     simplified_query: str,
     access_token: str | None,
     search_name: str,
+    effective_min_sales: int = 0,
 ) -> dict | None:
     """
     Segunda tentativa com query simplificada — mais ampla, pode trazer mais resultados.
@@ -243,7 +253,7 @@ def _retry_with_simplified_query(
     qualified, matches = filter_qualified_listings(
         catalog_name=search_name,
         listings=ml_result.listings,
-        min_sales=settings.MIN_SALES_THRESHOLD,
+        min_sales=effective_min_sales,
         min_confidence=min_confidence_fallback,
     )
 

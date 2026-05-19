@@ -314,11 +314,14 @@ def filter_qualified_listings(
 
         match = calculate_match_confidence(catalog_name, listing.title)
 
-        if not match.is_usable:
+        # Usa min_confidence se especificado, senão usa threshold padrão de is_usable (0.50)
+        effective_threshold = min_confidence if min_confidence > 0 else 0.50
+        if match.score < effective_threshold:
             discarded_low_match += 1
             logger.debug(
-                "Matching DESCARTADO: score=%.0f%% | '%s' | motivos: %s",
+                "Matching DESCARTADO: score=%.0f%% < %.0f%% | '%s' | motivos: %s",
                 match.score * 100,
+                effective_threshold * 100,
                 listing.title[:50],
                 "; ".join(match.reasons) if match.reasons else "baixa similaridade",
             )
