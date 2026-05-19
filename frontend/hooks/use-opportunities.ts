@@ -10,7 +10,9 @@ export function useOpportunities(
   enabled = true,
 ) {
   return useQuery<OpportunityListResponse>({
-    queryKey: ['opportunities', catalogId, filters],
+    // 'enabled' na queryKey garante que quando isReady muda false→true
+    // é tratada como uma query nova, sem erro cacheado do processamento anterior
+    queryKey: ['opportunities', catalogId, filters, enabled],
     queryFn: () =>
       getOpportunities(catalogId, {
         min_score: filters.min_score,
@@ -18,5 +20,6 @@ export function useOpportunities(
       }),
     staleTime: 30_000,
     enabled: !!catalogId && enabled,
+    retry: false,
   })
 }
