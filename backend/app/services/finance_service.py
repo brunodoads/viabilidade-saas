@@ -203,7 +203,7 @@ def analyze_catalog(db: Session, products: list[Product]) -> int:
 
     for product in products:
         if product.market_analysis is None:
-            logger.debug("Finance: '%s' sem dados de mercado — skip", product.search_name)
+            logger.info("Finance: SKIP '%s' — sem market_analysis no DB", product.search_name)
             continue
 
         try:

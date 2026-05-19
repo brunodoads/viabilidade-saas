@@ -43,13 +43,15 @@ class Settings(BaseSettings):
     ML_MAX_RETRIES: int = 3
     # Confiança mínima de matching: 0.40 = aceitável para MVP sem credenciais ML
     # Com credenciais reais e sold_quantity disponível, aumentar para 0.60+
-    ML_MIN_MATCH_CONFIDENCE: float = 0.40
+    # Confiança mínima de matching: 0.15 = diagnóstico (quase tudo passa).
+    # Aumentar para 0.40+ após confirmar que pipeline produz dados.
+    ML_MIN_MATCH_CONFIDENCE: float = 0.15
 
     ML_FEE_PCT: float = 15.0
-    # Threshold de vendas mínimas: usado APENAS quando autenticado no ML.
-    # Sem auth, sold_quantity retorna 0 e este valor é ignorado (min_sales=0).
-    # Valor 200 é mais realista que 1000 para o MVP — 1000 é muito restritivo.
-    MIN_SALES_THRESHOLD: int = 200
+    # Threshold de vendas mínimas: 0 = sem filtro (modo diagnóstico).
+    # Sem auth ML, sold_quantity=0 em todos os anúncios — filtro >0 eliminaria tudo.
+    # Aumentar para 100+ apenas após confirmar autenticação ML funcionando.
+    MIN_SALES_THRESHOLD: int = 0
 
     # ---- Claude API ----
     CLAUDE_API_KEY: str = ""
