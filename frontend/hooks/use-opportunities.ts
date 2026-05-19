@@ -4,7 +4,11 @@ import { useQuery } from '@tanstack/react-query'
 import { getOpportunities } from '@/lib/api'
 import type { OpportunityFilters, OpportunityListResponse } from '@/types'
 
-export function useOpportunities(catalogId: string, filters: OpportunityFilters = {}) {
+export function useOpportunities(
+  catalogId: string,
+  filters: OpportunityFilters = {},
+  enabled = true,
+) {
   return useQuery<OpportunityListResponse>({
     queryKey: ['opportunities', catalogId, filters],
     queryFn: () =>
@@ -13,6 +17,6 @@ export function useOpportunities(catalogId: string, filters: OpportunityFilters 
         recommendation: filters.recommendation || undefined,
       }),
     staleTime: 30_000,
-    enabled: !!catalogId,
+    enabled: !!catalogId && enabled,
   })
 }

@@ -64,10 +64,14 @@ app = FastAPI(
 )
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
+# IMPORTANTE: allow_origins=["*"] + allow_credentials=True é inválido pelo spec HTTP
+# e faz o browser rejeitar a resposta (header omitido silenciosamente pelo Starlette).
+# Usamos origens explícitas via CORS_ORIGINS env var.
+# Como usamos Bearer tokens (não cookies), allow_credentials=False é correto.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,  # JWT via Authorization header, nao via cookie
+    allow_origins=settings.cors_origins_list,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
