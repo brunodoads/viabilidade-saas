@@ -20,6 +20,7 @@ PRECISAO:
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -29,6 +30,42 @@ from app.models.product import Product
 from app.repositories.opportunity_repo import FinancialAnalysisRepository
 
 logger = logging.getLogger(__name__)
+
+# ── Extração de unidades por embalagem ───────────────────────────────────────
+# Catálogos de distribuidoras trazem o tamanho do lote no nome:
+#   "LEITE CONDENSADO MOCA 395G CX24" → 24 unidades por caixa
+#   "SABAO PO OMO 1KG PCT12"          → 12 unidades por pacote
+#   "OLEO SOJA CARGILL 900ML"         → 1 (sem código = unidade individual)
+#
+# O custo do catálogo é o custo do LOTE. Para comparar com o preço individual
+# do ML (preço de varejo), calculamos: unit_cost = lote_cost / qty
+
+_UNITS_PER_PKG_RE = re.compile(
+    r"\bcx\s*c?/?\s*(\d+)\b"      # CX24, CX/24, CXC/24
+    r"|\bfardo\s*(\d+)\b"          # FARDO30
+    r"|\bfd\s*(\d+)\b"             # FD24
+    r"|\bpct\s*(\d+)\b"            # PCT12
+    r"|\bpack\s*(\d+)\b"           # PACK6
+    r"|\bfco\s*(\d+)\b"            # FCO6 (frasco)
+    r"|\bc/\s*(\d+)\b"             # C/24
+    r"|\b(\d{2,3})\s*x\s*\d+\b",  # 12X1 (12 caixas de 1 un) — ignora 2x3 etc
+    re.IGNORECASE,
+)
+
+
+def extract_units_per_package(product_name: str) -> int:
+    """
+    Extrai a quantidade de unidades por embalagem do nome do produto.
+
+    Returns:
+        Número de unidades (mínimo 1). 1 = produto vendido individualmente.
+    """
+    match = _UNITS_PER_PKG_RE.search(product_name)
+    if match:
+        for group in match.groups():
+            if group is not None:
+                return max(1, int(group))
+    return 1
 
 _D2 = Decimal("0.01")
 _HUNDRED = Decimal("100")
@@ -207,8 +244,21 @@ def analyze_catalog(db: Session, products: list[Product]) -> int:
             continue
 
         try:
+            # Calcular custo unitário real.
+            # Catálogos de distribuidoras listam o custo do LOTE (ex: CX24 = 24 unidades).
+            # O ML vende por unidade, então comparamos o custo unitário.
+            # Sem código de embalagem → units_per_package = 1 → unit_cost = product.cost
+            units = extract_units_per_package(product.raw_name)
+            unit_cost = _round2(Decimal(str(product.cost)) / Decimal(str(units)))
+
+            if units > 1:
+                logger.info(
+                    "Finance: '%s' → %d unid/embalagem | custo_lote=R$%.2f | custo_unit=R$%.2f",
+                    product.search_name[:40], units, float(product.cost), float(unit_cost)
+                )
+
             result = calculate(
-                cost=product.cost,
+                cost=unit_cost,
                 avg_market_price=product.market_analysis.avg_price,
                 fee_config=FeeConfig.from_category(product.category),
             )

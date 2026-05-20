@@ -341,16 +341,51 @@ def filter_qualified_listings(
     return approved_listings, approved_matches
 
 
+# ── Padrões de embalagem de atacado (distribuidoras BR) ──────────────────────
+# CX24 = caixa com 24 | FARDO30 = fardo com 30 | PCT12 = pacote com 12
+# Esses códigos identificam QUANTIDADE do lote, não o produto em si.
+# Não devem constar na query do ML (consumidor não busca por "cx24").
+
+_PACKAGING_RE = re.compile(
+    r"\bcx\s*\d*\b"           # CX, CX24, CX 24
+    r"|\bfardo\s*\d*\b"       # FARDO, FARDO30
+    r"|\bfd\s*\d*\b"          # FD, FD24
+    r"|\bpct\s*\d*\b"         # PCT, PCT12
+    r"|\bpack\s*\d*\b"        # PACK, PACK6
+    r"|\bfco\s*\d*\b"         # FCO (frasco)
+    r"|\bc/\s*\d+\b"          # C/24, C/ 12
+    r"|\bcom\s+\d+\s*unid\w*" # COM 24 UNIDADES
+    r"|\b\d+\s*x\s*\d+\b",    # 12X1 (12 caixas de 1)
+    re.IGNORECASE,
+)
+
+
 def build_search_query(product_name: str) -> str:
     """
-    Constroi a query de busca otimizada para o ML a partir do nome do produto.
+    Constrói a query de busca otimizada para o ML a partir do nome do produto.
 
-    Remove tokens de quantidade, limita a 6 tokens relevantes.
+    Etapas:
+    1. Normalizar texto
+    2. Remover códigos de embalagem de atacado (CX24, FARDO, PCT...)
+       Esses códigos são irrelevantes para busca no ML (consumidor final)
+    3. Remover tokens de quantidade com sufixo de unidade
+    4. Limitar a 6 tokens mais relevantes
+
+    Exemplo:
+        "LEITE CONDENSADO MOCA 395G CX24" → "leite condensado moca 395"
+        "OLEO SOJA CARGILL 900ML" → "oleo soja cargill 900"
     """
+    # 1. Normalizar
     norm = _normalize(product_name)
-    tokens = _tokenize(norm)
 
-    quantity_suffixes = {"unid", "unidades", "pcs", "pecas", "pares", "cx"}
+    # 2. Remover códigos de embalagem de atacado ANTES de tokenizar
+    norm_clean = _PACKAGING_RE.sub(" ", norm)
+    norm_clean = " ".join(norm_clean.split())  # colapsar espaços
+
+    tokens = _tokenize(norm_clean)
+
+    # 3. Remover tokens de quantidade seguidos de sufixo de unidade
+    quantity_suffixes = {"unid", "unidades", "pcs", "pecas", "pares"}
     cleaned_tokens = []
     skip_next = False
 
@@ -363,13 +398,16 @@ def build_search_query(product_name: str) -> str:
             continue
         cleaned_tokens.append(token)
 
+    # 4. Limitar a 6 tokens (os mais relevantes ficam primeiro após normalização)
     query_tokens = cleaned_tokens[:6]
     query = " ".join(query_tokens)
 
     if not query:
+        # Fallback: 3 primeiras palavras brutas se normalização eliminou tudo
         words = product_name.split()[:3]
         query = " ".join(words)
 
+    logger.debug("build_search_query: '%s' → '%s'", product_name[:50], query)
     return query
 
 
@@ -400,11 +438,23 @@ def _weighted_jaccard(tokens_a: list, tokens_b: list) -> float:
 # ── Deteccao de penalizadores ─────────────────────────────────────────────────
 
 def _check_kit_mismatch(cat_norm: str, ml_norm: str) -> float:
-    """Penaliza quando o ML e um kit mas o catalogo e item individual."""
+    """
+    Penaliza quando o ML é um kit/combo mas o catálogo é item individual.
+
+    Penalidade reduzida (0.20) porque anúncios ML frequentemente mencionam
+    "1 unidade" ou "vendido por unidade" sem ser realmente um kit.
+    Penalidade alta (0.50) apenas para kits com múltiplos itens explícitos (>1).
+
+    Nota: catálogos de distribuidoras têm CX/FARDO no nome, mas já foram
+    removidos antes do matching pelo build_search_query. O cat_norm aqui
+    é o nome COMPLETO do produto (com CX24 etc.), então cat_is_kit pode
+    ser verdadeiro — nesse caso não penalizamos.
+    """
     ml_is_kit = any(re.search(p, ml_norm) for p in KIT_PATTERNS)
     cat_is_kit = any(re.search(p, cat_norm) for p in KIT_PATTERNS)
     if ml_is_kit and not cat_is_kit:
-        return 0.50
+        # Penalidade leve: anúncios "por unidade" são comuns e legítimos
+        return 0.20
     return 0.0
 
 

@@ -16,7 +16,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, catalogs, opportunities
+from app.api import auth, catalogs, diagnostics, opportunities
 from app.core.config import settings
 from app.db.session import check_db_connection
 
@@ -80,6 +80,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api")
 app.include_router(catalogs.router, prefix="/api")
 app.include_router(opportunities.router, prefix="/api")
+app.include_router(diagnostics.router, prefix="/api")
 
 
 # ── Health Check ─────────────────────────────────────────────────────────────
