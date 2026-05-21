@@ -151,6 +151,18 @@ class FinancialResult:
         cost = self.cost
         cfg = self.fee_config
 
+        # Guard: avg_price=0 ocorre quando Apify retorna dados inválidos.
+        # Produto inviável por definição — evita ZeroDivisionError no cálculo de margens.
+        if price <= _ZERO:
+            self.ml_fee = _ZERO
+            self.gross_revenue = _ZERO
+            self.gross_margin = _round2(-cost)
+            self.gross_margin_pct = _ZERO
+            self.break_even_price = cost
+            self.price_safety_margin_pct = _ZERO
+            self.is_viable = False
+            return
+
         self.ml_fee = _round2(price * cfg.ml_fee_pct / _HUNDRED)
         self.gross_revenue = price
         self.gross_margin = _round2(price - cost - self.ml_fee)
