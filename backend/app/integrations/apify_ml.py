@@ -131,7 +131,7 @@ def search_listings_apify(
     payload = {
         "keyword": query,
         "maxPages": max_pages,
-        "maxPagesOfertas": 0,  # Não precisamos de ofertas do dia
+        # maxPagesOfertas omitido — actor rejeita valor 0, padrão do actor é suficiente
     }
 
     logger.info("Apify ML: buscando '%s' (actor=%s, maxPages=%d)", query, actor_id, max_pages)
