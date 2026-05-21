@@ -71,6 +71,7 @@ _D2 = Decimal("0.01")
 _HUNDRED = Decimal("100")
 _ONE = Decimal("1")
 _ZERO = Decimal("0")
+_MAX_SAFETY_PCT = Decimal("999.99")  # Numeric(5,2) DB limit — evita DataError em produtos baratos com preço ML alto
 
 
 # Fee Configuration
@@ -175,9 +176,13 @@ class FinancialResult:
             self.break_even_price = _round2(cost / (_ONE - fee_rate))
 
         if self.break_even_price > _ZERO:
-            self.price_safety_margin_pct = _round2(
+            raw_safety = _round2(
                 (price - self.break_even_price) / self.break_even_price * _HUNDRED
             )
+            # Clamp para o limite Numeric(5,2) do PostgreSQL (max 999.99).
+            # Produtos muito baratos vs. preço ML (ex: custo=8.50, ML=190) geram
+            # valores >1000%, que causam DataError e corrompem a sessão SQLAlchemy.
+            self.price_safety_margin_pct = min(raw_safety, _MAX_SAFETY_PCT)
         else:
             self.price_safety_margin_pct = _ZERO
 
@@ -298,6 +303,13 @@ def analyze_catalog(db: Session, products: list[Product]) -> int:
                 "Finance: erro '%s' (%s): %s",
                 product.search_name, product.id, exc, exc_info=True,
             )
+            # CRÍTICO: após qualquer falha de commit (ex: DataError por overflow),
+            # a sessão SQLAlchemy entra em estado PendingRollbackError.
+            # Sem rollback explícito, TODOS os produtos seguintes falham também.
+            try:
+                db.rollback()
+            except Exception:
+                pass
 
     logger.info("Finance: %d/%d produtos analisados", analyzed, len(products))
     return analyzed
