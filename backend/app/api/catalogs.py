@@ -180,10 +180,21 @@ def reprocess_catalog(
     if catalog is None:
         raise NotFoundException("Catálogo")
 
-    if catalog.status not in (CatalogStatus.READY, CatalogStatus.ERROR):
+    # Permite reprocessar catálogos parados em estados de pipeline (orphaned task scenario):
+    # Quando o worker é reiniciado durante um deploy, a task é morta mas o status fica
+    # em ANALYZING/RESEARCHING/SCORING sem nenhuma task ativa. Sem essa permissão,
+    # o catálogo fica preso para sempre sem forma de recuperação.
+    _REPROCESS_ALLOWED_STATUSES = (
+        CatalogStatus.READY,
+        CatalogStatus.ERROR,
+        CatalogStatus.ANALYZING,
+        CatalogStatus.RESEARCHING,
+        CatalogStatus.SCORING,
+    )
+    if catalog.status not in _REPROCESS_ALLOWED_STATUSES:
         raise BadRequestException(
-            f"Só é possível re-processar catálogos com status READY ou ERROR. "
-            f"Status atual: {catalog.status.value}"
+            f"Só é possível re-processar catálogos com status READY, ERROR, ANALYZING, "
+            f"RESEARCHING ou SCORING. Status atual: {catalog.status.value}"
         )
 
     # Verifica se o conteúdo do arquivo ainda está disponível
