@@ -238,16 +238,31 @@ def analyze_catalog(db: Session, products: list[Product]) -> int:
     repo = FinancialAnalysisRepository(db)
     analyzed = 0
 
-    for product in products:
-        if product.market_analysis is None:
-            logger.info("Finance: SKIP '%s' — sem market_analysis no DB", product.search_name)
-            continue
+    # PRÉ-FILTRAR antes de qualquer db.commit().
+    # SQLAlchemy com expire_on_commit=True expira TODOS os objetos após cada commit.
+    # Se iterar sobre todos os 403 produtos APÓS o primeiro commit, cada acesso a
+    # product.market_analysis dispara um SELECT individual (N+1 queries).
+    # Com 403 produtos × ~200ms Railway = ~80s de overhead desnecessário.
+    # Pré-filtrar antes dos commits garante que verificamos os atributos ainda em memória.
+    products_to_analyze = [p for p in products if p.market_analysis is not None]
 
+    if not products_to_analyze:
+        logger.info("Finance: nenhum produto com market_analysis — nada a analisar")
+        return 0
+
+    logger.info("Finance: %d/%d produtos com dados de mercado", len(products_to_analyze), len(products))
+
+    for product in products_to_analyze:
         try:
             # Calcular custo unitário real.
             # Catálogos de distribuidoras listam o custo do LOTE (ex: CX24 = 24 unidades).
             # O ML vende por unidade, então comparamos o custo unitário.
             # Sem código de embalagem → units_per_package = 1 → unit_cost = product.cost
+            #
+            # ATENÇÃO: após db.commit(), SQLAlchemy expira os objetos (expire_on_commit=True).
+            # Acessar product.market_analysis aqui pode triggerar lazy load — mas como
+            # iteramos apenas sobre products_to_analyze (pré-filtrado), são no máximo
+            # 20 lazy loads × ~200ms = ~4s em vez de 403 × 200ms = ~80s.
             units = extract_units_per_package(product.raw_name)
             unit_cost = _round2(Decimal(str(product.cost)) / Decimal(str(units)))
 

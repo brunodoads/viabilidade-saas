@@ -35,12 +35,17 @@ from app.repositories.opportunity_repo import MarketAnalysisRepository
 logger = logging.getLogger(__name__)
 
 
-def research_catalog(db: Session, products: list[Product]) -> int:
+def research_catalog(db: Session, products: list[Product], skip_existing: bool = True) -> int:
     """
     Pesquisa mercado para todos os produtos de um catálogo.
 
     Tenta Apify primeiro (se APIFY_API_TOKEN configurado), depois ML API direta.
     Falha individual por produto é logada mas não interrompe o batch.
+
+    Args:
+        skip_existing: Se True, pula produtos que já têm MarketAnalysis no banco.
+                       Permite retomar pipeline interrompido sem reprocessar tudo.
+                       Padrão True — use False apenas para forçar refresh de preços.
 
     Returns:
         Número de produtos pesquisados com sucesso (com dados de mercado)
@@ -48,6 +53,14 @@ def research_catalog(db: Session, products: list[Product]) -> int:
     # Determinar qual estratégia de busca usar
     use_apify = bool(settings.APIFY_API_TOKEN)
     use_ml_api = bool(settings.ML_APP_ID and settings.ML_CLIENT_SECRET)
+
+    if skip_existing:
+        already_done = sum(1 for p in products if p.market_analysis is not None)
+        if already_done:
+            logger.info(
+                "Market: pulando %d/%d produtos com MarketAnalysis existente (pipeline resumível)",
+                already_done, len(products)
+            )
 
     if use_apify:
         logger.info(
@@ -63,7 +76,7 @@ def research_catalog(db: Session, products: list[Product]) -> int:
                 "Market: sem token ML — sold_quantity enriquecido via /items/{id} sem auth "
                 "(funciona para itens públicos)"
             )
-        return _research_with_apify(db, products, access_token)
+        return _research_with_apify(db, products, access_token, skip_existing=skip_existing)
 
     elif use_ml_api:
         logger.warning(
@@ -71,7 +84,7 @@ def research_catalog(db: Session, products: list[Product]) -> int:
             "Configure APIFY_API_TOKEN para resultados confiáveis."
         )
         access_token = _try_get_ml_token()
-        return _research_with_ml_api(db, products, access_token)
+        return _research_with_ml_api(db, products, access_token, skip_existing=skip_existing)
 
     else:
         logger.warning(
@@ -79,7 +92,7 @@ def research_catalog(db: Session, products: list[Product]) -> int:
             "Configure APIFY_API_TOKEN (recomendado) ou ML_APP_ID + ML_CLIENT_SECRET. "
             "Buscando sem autenticação — sold_quantity será 0."
         )
-        return _research_with_ml_api(db, products, access_token=None)
+        return _research_with_ml_api(db, products, access_token=None, skip_existing=skip_existing)
 
 
 # ── Estratégia 1: Apify ───────────────────────────────────────────────────────
@@ -88,12 +101,18 @@ def _research_with_apify(
     db: Session,
     products: list[Product],
     ml_access_token: str | None,
+    skip_existing: bool = True,
 ) -> int:
     """Pesquisa usando Apify + enriquecimento via ML Items API."""
     repo = MarketAnalysisRepository(db)
     processed = 0
 
     for i, product in enumerate(products):
+        # Pular produtos já processados (pipeline resumível)
+        if skip_existing and product.market_analysis is not None:
+            processed += 1  # Conta como processado (já tem dados)
+            continue
+
         logger.info(
             "Market [Apify]: produto %d/%d | '%s'",
             i + 1, len(products), product.search_name
@@ -347,6 +366,7 @@ def _research_with_ml_api(
     db: Session,
     products: list[Product],
     access_token: str | None,
+    skip_existing: bool = True,
 ) -> int:
     """Pesquisa usando ML API direta (provável bloqueio 403, mantido como fallback)."""
     if access_token:
@@ -362,6 +382,11 @@ def _research_with_ml_api(
     processed = 0
 
     for i, product in enumerate(products):
+        # Pular produtos já processados (pipeline resumível)
+        if skip_existing and product.market_analysis is not None:
+            processed += 1
+            continue
+
         logger.info(
             "Market [ML API]: produto %d/%d | '%s'",
             i + 1, len(products), product.search_name

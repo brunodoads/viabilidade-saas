@@ -40,8 +40,9 @@ class PipelineTask(Task):
     name="tasks.process_catalog",
     max_retries=3,
     default_retry_delay=60,  # 60s entre retries
-    soft_time_limit=1800,    # 30min — timeout soft (lança SoftTimeLimitExceeded)
-    time_limit=2100,         # 35min — timeout hard (mata o processo)
+    # 403 produtos × ~20s/Apify = ~2.25h. Margem de 2x para catálogos grandes.
+    soft_time_limit=18000,   # 5h — timeout soft (lança SoftTimeLimitExceeded)
+    time_limit=18600,        # 5h10m — timeout hard (mata o processo)
 )
 def process_catalog_task(self: Task, catalog_id_str: str) -> dict:
     """
@@ -229,8 +230,8 @@ def process_catalog_task(self: Task, catalog_id_str: str) -> dict:
     name="tasks.reprocess_analysis",
     max_retries=3,
     default_retry_delay=60,
-    soft_time_limit=1800,
-    time_limit=2100,
+    soft_time_limit=18000,   # 5h — mesmo limite que process_catalog
+    time_limit=18600,        # 5h10m
 )
 def reprocess_analysis_task(self: Task, catalog_id_str: str) -> dict:
     """
@@ -273,11 +274,15 @@ def reprocess_analysis_task(self: Task, catalog_id_str: str) -> dict:
             catalog_id, len(products)
         )
 
-        # Limpar análises anteriores (preserva produtos)
+        # Limpar análises derivadas (Finance + Score), preservar MarketAnalysis existente.
+        # Motivo: MarketAnalysis é o passo mais lento (403 × ~20s = 2h+ via Apify).
+        # Ao preservar dados já coletados, o pipeline é resumível:
+        #   - Se a task falhar no produto 200/403, a retentativa retoma do produto 201.
+        #   - Se o usuário quiser forçar refresh de preços: implementar /reprocess?force=true (Fase 2).
         product_ids = [p.id for p in products]
         db.query(OpportunityScore).filter(OpportunityScore.product_id.in_(product_ids)).delete(synchronize_session="fetch")
         db.query(FinancialAnalysis).filter(FinancialAnalysis.product_id.in_(product_ids)).delete(synchronize_session="fetch")
-        db.query(MarketAnalysis).filter(MarketAnalysis.product_id.in_(product_ids)).delete(synchronize_session="fetch")
+        # MarketAnalysis preservada — reprocessada apenas se ausente (skip_existing=True no market_service)
         db.commit()
         db.expire_all()
 
