@@ -145,6 +145,96 @@ def diagnose_catalog(
     }
 
 
+@router.get(
+    "/ml-test",
+    summary="Testar conectividade com Mercado Livre",
+    description=(
+        "Faz uma busca real no ML com a query 'teclado multimidia' "
+        "e retorna o resultado bruto para diagnóstico de autenticação e conectividade. "
+        "NÃO requer catálogo — testa direto a integração ML."
+    ),
+)
+def test_ml_connectivity(
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """
+    Diagnóstico rápido da integração ML.
+
+    Retorna:
+        - token_status: se conseguiu obter token OAuth
+        - search_status: resultado da busca
+        - total_raw_listings: quantos anúncios a API retornou
+        - sample_listings: primeiros 3 anúncios brutos
+        - api_errors: erros reportados pela integração
+        - query_used: query de teste usada
+    """
+    from app.core.config import settings
+    from app.integrations.mercadolivre import get_app_token, search_listings
+
+    test_query = "teclado multimidia"
+
+    # 1. Testar autenticação
+    try:
+        token = get_app_token(
+            app_id=settings.ML_APP_ID,
+            client_secret=settings.ML_CLIENT_SECRET,
+        )
+        token_status = "OK — token obtido" if token else "FALHOU — credenciais inválidas ou ausentes"
+        token_preview = (token[:12] + "...") if token else None
+    except Exception as exc:
+        token_status = f"ERRO — {exc}"
+        token = None
+        token_preview = None
+
+    # 2. Testar busca
+    try:
+        result = search_listings(query=test_query, access_token=token)
+        search_status = "OK" if result else "FALHOU — search_listings retornou None"
+
+        if result:
+            sample = [
+                {
+                    "title": l.title[:80],
+                    "price": float(l.price),
+                    "sold_quantity": l.sold_quantity,
+                }
+                for l in result.listings[:3]
+            ]
+            return {
+                "query_used": test_query,
+                "token_status": token_status,
+                "token_preview": token_preview,
+                "search_status": search_status,
+                "total_raw_listings": result.total_found,
+                "pages_fetched": result.pages_fetched,
+                "api_errors": result.api_errors,
+                "sample_listings": sample,
+            }
+        else:
+            return {
+                "query_used": test_query,
+                "token_status": token_status,
+                "token_preview": token_preview,
+                "search_status": "FALHOU — search_listings retornou None (erro irrecuperável)",
+                "total_raw_listings": 0,
+                "pages_fetched": 0,
+                "api_errors": ["search_listings retornou None"],
+                "sample_listings": [],
+            }
+
+    except Exception as exc:
+        return {
+            "query_used": test_query,
+            "token_status": token_status,
+            "token_preview": token_preview,
+            "search_status": f"ERRO — {exc}",
+            "total_raw_listings": 0,
+            "pages_fetched": 0,
+            "api_errors": [str(exc)],
+            "sample_listings": [],
+        }
+
+
 def _identify_bottleneck(products: int, market: int, finance: int, scores: int) -> dict:
     """Identifica automaticamente onde o pipeline está quebrando."""
     if products == 0:
