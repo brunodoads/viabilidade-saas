@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     # Aumentar para 100+ apenas após confirmar autenticação ML funcionando.
     MIN_SALES_THRESHOLD: int = 0
 
+    # ---- Apify (busca ML) ----
+    # APIFY_API_TOKEN: obter em console.apify.com/settings/integrations
+    # Necessário porque /sites/MLB/search está bloqueado para developers sem certificação.
+    # Custo: ~$1/1000 resultados. MVP com 400 produtos ≈ $0.03.
+    APIFY_API_TOKEN: str = ""
+    APIFY_ML_ACTOR_ID: str = "karamelo~mercadolivre-scraper-brasil-portugues"
+
     # ---- Claude API ----
     CLAUDE_API_KEY: str = ""
     CLAUDE_MODEL: str = "claude-3-5-haiku-20241022"

@@ -186,53 +186,60 @@ def test_ml_connectivity(
         token = None
         token_preview = None
 
-    # 2. Testar busca
+    # 2. Testar busca via search_listings (Bearer header)
+    search_via_helper = {}
     try:
         result = search_listings(query=test_query, access_token=token)
-        search_status = "OK" if result else "FALHOU — search_listings retornou None"
-
         if result:
-            sample = [
-                {
-                    "title": l.title[:80],
-                    "price": float(l.price),
-                    "sold_quantity": l.sold_quantity,
-                }
-                for l in result.listings[:3]
-            ]
-            return {
-                "query_used": test_query,
-                "token_status": token_status,
-                "token_preview": token_preview,
-                "search_status": search_status,
-                "total_raw_listings": result.total_found,
-                "pages_fetched": result.pages_fetched,
-                "api_errors": result.api_errors,
-                "sample_listings": sample,
+            search_via_helper = {
+                "method": "Bearer header via search_listings",
+                "total": result.total_found,
+                "pages": result.pages_fetched,
+                "errors": result.api_errors,
             }
         else:
-            return {
-                "query_used": test_query,
-                "token_status": token_status,
-                "token_preview": token_preview,
-                "search_status": "FALHOU — search_listings retornou None (erro irrecuperável)",
-                "total_raw_listings": 0,
-                "pages_fetched": 0,
-                "api_errors": ["search_listings retornou None"],
-                "sample_listings": [],
-            }
+            search_via_helper = {"method": "Bearer header", "total": 0, "errors": ["retornou None"]}
+    except Exception as exc:
+        search_via_helper = {"method": "Bearer header", "total": 0, "errors": [str(exc)]}
+
+    # 3. Testar busca RAW — captura o body exato do 403 para diagnóstico
+    import httpx as _httpx
+    raw_test = {}
+    try:
+        ml_url = "https://api.mercadolibre.com/sites/MLB/search"
+
+        # 3a. Sem token
+        r_no_token = _httpx.get(ml_url, params={"q": test_query, "limit": 3}, timeout=10)
+        raw_test["no_token"] = {"status": r_no_token.status_code, "body": r_no_token.text[:300]}
+
+        # 3b. Bearer header
+        r_bearer = _httpx.get(
+            ml_url,
+            params={"q": test_query, "limit": 3},
+            headers={"Authorization": f"Bearer {token}"} if token else {},
+            timeout=10,
+        )
+        raw_test["bearer_header"] = {"status": r_bearer.status_code, "body": r_bearer.text[:300]}
+
+        # 3c. Query param
+        if token:
+            r_qp = _httpx.get(
+                ml_url,
+                params={"q": test_query, "limit": 3, "access_token": token},
+                timeout=10,
+            )
+            raw_test["query_param"] = {"status": r_qp.status_code, "body": r_qp.text[:300]}
 
     except Exception as exc:
-        return {
-            "query_used": test_query,
-            "token_status": token_status,
-            "token_preview": token_preview,
-            "search_status": f"ERRO — {exc}",
-            "total_raw_listings": 0,
-            "pages_fetched": 0,
-            "api_errors": [str(exc)],
-            "sample_listings": [],
-        }
+        raw_test["raw_error"] = str(exc)
+
+    return {
+        "query_used": test_query,
+        "token_status": token_status,
+        "token_preview": token_preview,
+        "search_via_helper": search_via_helper,
+        "raw_ml_tests": raw_test,
+    }
 
 
 def _identify_bottleneck(products: int, market: int, finance: int, scores: int) -> dict:

@@ -391,6 +391,112 @@ def aggregate_market_data(listings: list[MLListing], matches: list | None = None
 
 # ── Utilitários ───────────────────────────────────────────────────────────────
 
+def get_item_details(item_id: str, access_token: str | None = None) -> dict | None:
+    """
+    Busca detalhes de um item específico via ML Items API.
+
+    Este endpoint NÃO está bloqueado (diferente do /sites/MLB/search).
+    Retorna sold_quantity real, condition, listing_type, e outros campos.
+
+    Usado para enriquecer listings obtidos via Apify com sold_quantity.
+
+    Args:
+        item_id:      ID do item ML (ex: "MLB4290861023")
+        access_token: Token OAuth. None = tenta sem autenticação (funciona para itens públicos).
+
+    Returns:
+        Dict com campos do item ou None em caso de erro/item não encontrado.
+        Campos úteis: sold_quantity, condition, listing_type_id, seller.id, price
+    """
+    if not item_id:
+        return None
+
+    url = f"{BASE_URL}/items/{item_id}"
+    headers = _build_headers(access_token)
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(url, headers=headers)
+
+            if response.status_code == 404:
+                logger.debug("ML Items: item %s não encontrado (404)", item_id)
+                return None
+
+            if response.status_code in (401, 403):
+                logger.warning(
+                    "ML Items: acesso negado para %s (%d) — item pode ser privado",
+                    item_id, response.status_code
+                )
+                return None
+
+            response.raise_for_status()
+            return response.json()
+
+    except httpx.TimeoutException:
+        logger.warning("ML Items: timeout ao buscar item %s", item_id)
+        return None
+    except Exception as exc:
+        logger.error("ML Items: erro ao buscar item %s: %s", item_id, exc)
+        return None
+
+
+def enrich_listings_with_sold_quantity(
+    listings: list["MLListing"],
+    access_token: str | None = None,
+    max_to_enrich: int = 20,
+    delay_seconds: float = 0.2,
+) -> list["MLListing"]:
+    """
+    Enriquece listings com sold_quantity real via ML Items API.
+
+    Chamado depois da filtragem por matching para evitar chamadas
+    desnecessárias em listings que serão descartados.
+
+    Args:
+        listings:       Lista de MLListings (geralmente já filtrada por matching)
+        access_token:   Token OAuth (None = tenta sem auth)
+        max_to_enrich:  Máximo de items a enriquecer (evita muitas chamadas)
+        delay_seconds:  Pausa entre chamadas à API
+
+    Returns:
+        Lista com sold_quantity atualizado onde disponível.
+        Listings sem item_id válido ou que falharam permanecem com sold_quantity=0.
+    """
+    if not listings:
+        return listings
+
+    to_enrich = listings[:max_to_enrich]
+    enriched_count = 0
+
+    for i, listing in enumerate(to_enrich):
+        if not listing.item_id:
+            continue
+
+        details = get_item_details(listing.item_id, access_token)
+        if details:
+            listing.sold_quantity = int(details.get("sold_quantity", 0) or 0)
+            # Aproveitar para atualizar outros campos se estiverem vazios
+            if not listing.condition:
+                listing.condition = details.get("condition", "")
+            if not listing.listing_type:
+                listing.listing_type = details.get("listing_type_id", "")
+            if listing.seller_id == 0:
+                seller = details.get("seller", {}) or {}
+                listing.seller_id = int(seller.get("id", 0) or 0)
+            enriched_count += 1
+
+        # Throttle entre chamadas
+        if i < len(to_enrich) - 1:
+            time.sleep(delay_seconds)
+
+    logger.info(
+        "ML Items: enriquecidos %d/%d listings com sold_quantity",
+        enriched_count, len(to_enrich)
+    )
+
+    return listings
+
+
 def _build_headers(access_token: str | None) -> dict:
     headers = {
         "Accept": "application/json",
