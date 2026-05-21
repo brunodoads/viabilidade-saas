@@ -221,3 +221,115 @@ def process_catalog_task(self: Task, catalog_id_str: str) -> dict:
                 _os.unlink(_temp_file.name)
             except OSError:
                 pass
+
+
+@celery_app.task(
+    bind=True,
+    base=PipelineTask,
+    name="tasks.reprocess_analysis",
+    max_retries=3,
+    default_retry_delay=60,
+    soft_time_limit=1800,
+    time_limit=2100,
+)
+def reprocess_analysis_task(self: Task, catalog_id_str: str) -> dict:
+    """
+    Reprocessa apenas as etapas de análise (market → finance → score),
+    reutilizando os produtos já extraídos.
+
+    Usado pelo endpoint /reprocess para evitar re-parsear o PDF inteiro.
+    Muito mais rápido que process_catalog_task para diagnóstico e correção
+    de configurações (ex: adicionar credenciais ML após upload).
+    """
+    catalog_id = uuid.UUID(catalog_id_str)
+
+    from app.db.session import SessionLocal
+    from app.models.catalog import CatalogStatus
+    from app.models.analysis import FinancialAnalysis, MarketAnalysis, OpportunityScore
+    from app.repositories.catalog_repo import CatalogRepository
+    from app.repositories.product_repo import ProductRepository
+    from app.services import finance_service, market_service, strategy_service
+
+    db = SessionLocal()
+    try:
+        catalog_repo = CatalogRepository(db)
+        catalog = catalog_repo.get_by_id(catalog_id)
+
+        if catalog is None:
+            logger.error("Catálogo %s não encontrado", catalog_id)
+            return {"status": "not_found", "catalog_id": catalog_id_str}
+
+        # Carregar produtos existentes
+        product_repo = ProductRepository(db)
+        products = product_repo.get_by_catalog_with_analyses(catalog_id)
+
+        if not products:
+            logger.error("Nenhum produto encontrado para catálogo %s", catalog_id)
+            catalog_repo.update_status(catalog, CatalogStatus.ERROR, "Nenhum produto encontrado. Faça um novo upload.")
+            return {"status": "no_products", "catalog_id": catalog_id_str}
+
+        logger.info(
+            "Reprocessando análises | catalog_id=%s | %d produtos existentes",
+            catalog_id, len(products)
+        )
+
+        # Limpar análises anteriores (preserva produtos)
+        product_ids = [p.id for p in products]
+        db.query(OpportunityScore).filter(OpportunityScore.product_id.in_(product_ids)).delete(synchronize_session="fetch")
+        db.query(FinancialAnalysis).filter(FinancialAnalysis.product_id.in_(product_ids)).delete(synchronize_session="fetch")
+        db.query(MarketAnalysis).filter(MarketAnalysis.product_id.in_(product_ids)).delete(synchronize_session="fetch")
+        db.commit()
+        db.expire_all()
+
+        # ── Etapa 1: RESEARCHING ─────────────────────────────────────────────
+        try:
+            catalog_repo.update_status(catalog, CatalogStatus.RESEARCHING)
+            products = product_repo.get_by_catalog_with_analyses(catalog_id)
+            processed = market_service.research_catalog(db=db, products=products)
+            catalog_repo.update_progress(catalog, total_products=len(products), processed_products=processed)
+            logger.info("RESEARCHING OK | %d produtos pesquisados", processed)
+        except Exception as exc:
+            catalog_repo.update_status(catalog, CatalogStatus.ERROR, f"Erro na pesquisa ML: {exc}")
+            raise self.retry(exc=exc)
+
+        # ── Etapa 2: ANALYZING ───────────────────────────────────────────────
+        try:
+            catalog_repo.update_status(catalog, CatalogStatus.ANALYZING)
+            db.expire_all()
+            products = product_repo.get_by_catalog_with_analyses(catalog_id)
+            finance_service.analyze_catalog(db=db, products=products)
+            logger.info("ANALYZING OK | análise financeira concluída")
+        except Exception as exc:
+            catalog_repo.update_status(catalog, CatalogStatus.ERROR, f"Erro na análise financeira: {exc}")
+            raise self.retry(exc=exc)
+
+        # ── Etapa 3: SCORING ─────────────────────────────────────────────────
+        try:
+            catalog_repo.update_status(catalog, CatalogStatus.SCORING)
+            db.expire_all()
+            products = product_repo.get_by_catalog_with_analyses(catalog_id)
+            strategy_service.score_catalog(db=db, catalog_id=catalog_id, products=products)
+            logger.info("SCORING OK | scores calculados")
+        except Exception as exc:
+            catalog_repo.update_status(catalog, CatalogStatus.ERROR, f"Erro no scoring: {exc}")
+            raise self.retry(exc=exc)
+
+        # ── Concluído ────────────────────────────────────────────────────────
+        catalog_repo.update_status(catalog, CatalogStatus.READY)
+        catalog_repo.update_progress(catalog, total_products=len(products), processed_products=len(products))
+
+        logger.info(
+            "Reprocessamento CONCLUÍDO | catalog_id=%s | %d produtos analisados",
+            catalog_id, len(products)
+        )
+
+        return {
+            "status": "ready",
+            "catalog_id": catalog_id_str,
+            "total_products": len(products),
+        }
+
+    except Exception:
+        raise
+    finally:
+        db.close()

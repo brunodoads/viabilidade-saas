@@ -193,34 +193,54 @@ def reprocess_catalog(
             "Faça um novo upload do catálogo."
         )
 
-    # Limpar dados da análise anterior (produtos, análises, scores)
-    # Os produtos têm ON DELETE CASCADE para as análises filhas
+    # Verificar se existem produtos extraídos para reutilizar
     from app.models.product import Product as ProductModel
-    db.query(ProductModel).filter(
+    product_count = db.query(ProductModel).filter(
         ProductModel.catalog_id == catalog_id
-    ).delete(synchronize_session="fetch")
+    ).count()
 
-    # Resetar status para PENDING e limpar metadados de análise anterior
-    repo.update_status(catalog, CatalogStatus.PENDING)
-    repo.update_progress(catalog, total_products=0, processed_products=0)
-    catalog.parse_metadata = None
-    catalog.error_message = None
-    db.commit()
+    if product_count > 0:
+        # Produtos existem — reprocessar só as análises (market → finance → score)
+        # SEM re-parsear o arquivo. Muito mais rápido e evita re-chamar Claude Vision.
+        # A nova task limpa as análises internamente antes de rodar.
+        repo.update_status(catalog, CatalogStatus.PENDING)
+        catalog.error_message = None
+        db.commit()
 
-    _logger.info(
-        "Re-processo solicitado | catalog_id=%s | arquivo=%s | user=%s",
-        catalog.id, catalog.original_filename, current_user.id
-    )
-
-    # Re-disparar pipeline
-    try:
-        from app.workers.tasks import process_catalog_task
-        process_catalog_task.delay(str(catalog.id))
-    except Exception as exc:
-        _logger.warning(
-            "Celery broker indisponível ao re-processar catálogo %s: %s",
-            catalog.id, str(exc),
+        _logger.info(
+            "Re-processo (só análises) | catalog_id=%s | %d produtos existentes | user=%s",
+            catalog.id, product_count, current_user.id
         )
+
+        try:
+            from app.workers.tasks import reprocess_analysis_task
+            reprocess_analysis_task.delay(str(catalog.id))
+        except Exception as exc:
+            _logger.warning(
+                "Celery broker indisponível ao re-processar catálogo %s: %s",
+                catalog.id, str(exc),
+            )
+    else:
+        # Sem produtos — precisa re-parsear tudo do zero
+        repo.update_status(catalog, CatalogStatus.PENDING)
+        repo.update_progress(catalog, total_products=0, processed_products=0)
+        catalog.parse_metadata = None
+        catalog.error_message = None
+        db.commit()
+
+        _logger.info(
+            "Re-processo completo (sem produtos) | catalog_id=%s | arquivo=%s | user=%s",
+            catalog.id, catalog.original_filename, current_user.id
+        )
+
+        try:
+            from app.workers.tasks import process_catalog_task
+            process_catalog_task.delay(str(catalog.id))
+        except Exception as exc:
+            _logger.warning(
+                "Celery broker indisponível ao re-processar catálogo %s: %s",
+                catalog.id, str(exc),
+            )
 
     return CatalogUploadResponse.model_validate(catalog)
 
