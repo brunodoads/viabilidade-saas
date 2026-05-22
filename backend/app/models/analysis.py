@@ -157,7 +157,7 @@ class FinancialAnalysis(Base, UUIDPrimaryKeyMixin):
         comment="Margem bruta em R$ = receita - custo - taxa ML",
     )
     gross_margin_pct: Mapped[Decimal] = mapped_column(
-        Numeric(5, 2),
+        Numeric(10, 2),  # Widened from (5,2): can be <-1000% when cost >> market price
         nullable=False,
         comment="Margem bruta em % sobre a receita",
     )
@@ -167,7 +167,7 @@ class FinancialAnalysis(Base, UUIDPrimaryKeyMixin):
         comment="Preço mínimo para cobrir custo + taxa ML sem lucro",
     )
     price_safety_margin_pct: Mapped[Decimal | None] = mapped_column(
-        Numeric(5, 2),
+        Numeric(10, 2),  # Widened from (5,2): can be >1000% when cost << market price
         nullable=True,
         comment="Quanto o preço médio está acima do break_even em % — margem de segurança",
     )
