@@ -44,6 +44,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         logger.critical("❌ Falha na conexão com banco de dados — verifique DATABASE_URL")
         # Não impede startup para permitir health check retornar erro
 
+    # Auto-migrate: roda alembic upgrade head no startup.
+    # Garante que migrations novas sejam aplicadas automaticamente no Railway
+    # sem precisar de um release command separado.
+    try:
+        from alembic.config import Config
+        from alembic import command as alembic_command
+        import os
+
+        alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
+        alembic_cfg.set_main_option("script_location", os.path.join(os.path.dirname(__file__), "..", "alembic"))
+        alembic_command.upgrade(alembic_cfg, "head")
+        logger.info("✅ Migrations aplicadas com sucesso (alembic upgrade head)")
+    except Exception as exc:
+        logger.warning("⚠️  Falha ao aplicar migrations: %s — continuando startup", exc)
+
     yield
 
     # Shutdown
