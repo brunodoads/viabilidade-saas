@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { listCatalogs } from '@/lib/api'
-import { CatalogListItem } from '@/types'
+import { CatalogListItem, CatalogStatus } from '@/types'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
@@ -11,16 +11,14 @@ import { formatDate } from '@/lib/utils'
 import { FileSpreadsheet, FilePlus, ChevronRight } from 'lucide-react'
 import Link from 'next/link'
 
-type BadgeVariant = 'gray' | 'info' | 'success' | 'danger'
-
-const STATUS_CONFIG: Record<string, { label: string; variant: BadgeVariant }> = {
-  PENDING:     { label: 'Na fila',         variant: 'gray' },
-  PARSING:     { label: 'Lendo arquivo',   variant: 'info' },
-  RESEARCHING: { label: 'Pesquisando ML',  variant: 'info' },
-  ANALYZING:   { label: 'Calculando',      variant: 'info' },
-  SCORING:     { label: 'Pontuando',       variant: 'info' },
-  READY:       { label: 'Pronto',          variant: 'success' },
-  ERROR:       { label: 'Erro',            variant: 'danger' },
+const STATUS_CONFIG: Record<CatalogStatus, { label: string; variant: 'gray' | 'info' | 'success' | 'danger' }> = {
+  PENDING:     { label: 'Na fila',        variant: 'gray'    },
+  PARSING:     { label: 'Lendo arquivo',  variant: 'info'    },
+  RESEARCHING: { label: 'Pesquisando ML', variant: 'info'    },
+  ANALYZING:   { label: 'Analisando',     variant: 'info'    },
+  SCORING:     { label: 'Calculando',     variant: 'info'    },
+  READY:       { label: 'Pronto',         variant: 'success' },
+  ERROR:       { label: 'Erro',           variant: 'danger'  },
 }
 
 export default function DashboardPage() {
@@ -73,7 +71,7 @@ export default function DashboardPage() {
       {data && data.length > 0 && (
         <div className="space-y-3">
           {data.map((catalog) => {
-            const cfg = STATUS_CONFIG[catalog.status] ?? { label: catalog.status, variant: 'gray' as BadgeVariant }
+            const cfg = STATUS_CONFIG[catalog.status] ?? { label: catalog.status, variant: 'gray' as const }
             return (
               <Link key={catalog.id} href={`/catalogs/${catalog.id}`}>
                 <Card className="hover:border-blue-200 hover:shadow transition-all cursor-pointer">

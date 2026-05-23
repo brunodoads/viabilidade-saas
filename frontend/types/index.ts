@@ -1,4 +1,12 @@
-export type CatalogStatus = 'PENDING' | 'PROCESSING' | 'READY' | 'ERROR'
+export type CatalogStatus =
+  | 'PENDING'
+  | 'PARSING'
+  | 'RESEARCHING'
+  | 'ANALYZING'
+  | 'SCORING'
+  | 'READY'
+  | 'ERROR'
+
 export type FileType = 'XLSX' | 'CSV' | 'PDF'
 export type Recommendation = 'EXCELENTE' | 'BOA' | 'ARRISCADA' | 'EVITAR'
 
