@@ -163,4 +163,16 @@ def list_opportunities(
                 margin_score=score.margin_score,
                 competition_score=score.competition_score,
                 market=market_data,
-                financial=financi
+                financial=financial_data,
+            )
+        )
+
+    # Ordenar por rank (já deveria estar ordenado mas garante)
+    items.sort(key=lambda x: x.rank)
+
+    return OpportunityListResponse(
+        catalog_id=catalog_id,
+        total=len(items),
+        items=items,
+    )
+

@@ -74,10 +74,10 @@ class MLListing:
     thumbnail: str = ""
     # Reputação do seller (disponível em chamada separada — Fase 2)
     seller_reputation: str = ""
-    # Frete e taxa real — enriquecidos via ML Items API + Listing Prices API
+    # Frete e taxa real -- enriquecidos via ML Items API + Listing Prices API
     free_shipping: bool = False
-    logistic_type: str = ""   # "fulfillment", "drop_off", "self_service", "not_specified"
-    ml_fee_pct: Decimal | None = None  # Taxa real do ML para esta categoria/preço
+    logistic_type: str = ""
+    ml_fee_pct: "Decimal | None" = None
 
 
 @dataclass
@@ -380,13 +380,11 @@ def aggregate_market_data(listings: list[MLListing], matches: list | None = None
     if matches:
         avg_confidence = round(sum(m.score for m in matches) / len(matches), 3)
 
-    # ── Taxa ML real (avg das que foram enriquecidas) ─────────────────────────
+    # Taxa ML real média
     fees = [l.ml_fee_pct for l in listings if l.ml_fee_pct is not None]
     avg_ml_fee_pct = _round(sum(fees) / len(fees)) if fees else None
 
-    # ── % de anúncios com frete grátis ───────────────────────────────────────
-    # Indica se o mercado ESPERA frete grátis — sinal para o cálculo financeiro.
-    # Se >50% dos top vendedores oferecem frete grátis, o seller precisa cobrir.
+    # % anuncios com frete gratis
     free_count = sum(1 for l in listings if l.free_shipping)
     free_shipping_pct = _round(Decimal(str(free_count)) / Decimal(str(len(listings))) * Decimal("100"))
 
@@ -396,7 +394,7 @@ def aggregate_market_data(listings: list[MLListing], matches: list | None = None
         "max_price": _round(max(prices)),
         "total_sellers": len(seller_ids),
         "total_listings_found": len(listings),
-        "listings_above_threshold": len(listings),  # já filtrado antes
+        "listings_above_threshold": len(listings),
         "avg_sold_quantity": int(avg_sold),
         "total_sold_quantity": total_sold,
         "avg_match_confidence": avg_confidence,
@@ -456,38 +454,104 @@ def get_item_details(item_id: str, access_token: str | None = None) -> dict | No
         return None
 
 
+
 def get_listing_fee(
     price: Decimal,
     category_id: str,
     listing_type_id: str = "gold_special",
-) -> Decimal | None:
-    """
-    Obtém a taxa real do ML para uma combinação de categoria/preço via Listing Prices API.
-
-    Endpoint público — não exige autenticação.
-    A taxa varia por categoria: eletrônicos ~16%, alimentos ~11%, ferramentas ~12%, etc.
-
-    Args:
-        price:           Preço do anúncio (influencia a taxa em algumas categorias)
-        category_id:     ID da categoria ML (ex: "MLB1648" = Eletrônicos)
-        listing_type_id: Tipo do anúncio — "gold_special" é o padrão pago mais comum
-
-    Returns:
-        Taxa em % (ex: Decimal("11.00")) ou None em caso de falha.
-    """
+) -> "Decimal | None":
+    """Taxa real do ML via Listing Prices API (publico, sem auth)."""
     if not category_id or price <= Decimal("0"):
         return None
-
     url = f"{BASE_URL}/sites/MLB/listing_prices"
-    params = {
-        "price": str(price),
-        "category_id": category_id,
-        "listing_type_id": listing_type_id,
-    }
-
+    params = {"price": str(price), "category_id": category_id, "listing_type_id": listing_type_id}
     try:
         with httpx.Client(timeout=8.0) as client:
-            response = client.get(url, params=params)
+            resp = client.get(url, params=params)
+            if resp.status_code not in (200,):
+                return None
+            fee = resp.json().get("sale_fee_percentage")
+            return Decimal(str(fee)).quantize(Decimal("0.01")) if fee is not None else None
+    except Exception as exc:
+        logger.debug("ML Listing Prices: erro categoria '%s': %s", category_id, exc)
+        return None
 
-            if response.status_code == 404:
-                logger
+def enrich_listings_with_sold_quantity(
+    listings: list["MLListing"],
+    access_token: str | None = None,
+    max_to_enrich: int = 20,
+    delay_seconds: float = 0.2,
+) -> list["MLListing"]:
+    """
+    Enriquece listings com sold_quantity real via ML Items API.
+
+    Chamado depois da filtragem por matching para evitar chamadas
+    desnecessárias em listings que serão descartados.
+
+    Args:
+        listings:       Lista de MLListings (geralmente já filtrada por matching)
+        access_token:   Token OAuth (None = tenta sem auth)
+        max_to_enrich:  Máximo de items a enriquecer (evita muitas chamadas)
+        delay_seconds:  Pausa entre chamadas à API
+
+    Returns:
+        Lista com sold_quantity atualizado onde disponível.
+        Listings sem item_id válido ou que falharam permanecem com sold_quantity=0.
+    """
+    if not listings:
+        return listings
+
+    to_enrich = listings[:max_to_enrich]
+    enriched_count = 0
+
+    fee_enriched = 0
+    for i, listing in enumerate(to_enrich):
+        if not listing.item_id:
+            continue
+
+        details = get_item_details(listing.item_id, access_token)
+        if details:
+            listing.sold_quantity = int(details.get("sold_quantity", 0) or 0)
+            if not listing.condition:
+                listing.condition = details.get("condition", "")
+            if not listing.listing_type:
+                listing.listing_type = details.get("listing_type_id", "")
+            if listing.seller_id == 0:
+                seller = details.get("seller", {}) or {}
+                listing.seller_id = int(seller.get("id", 0) or 0)
+            shipping = details.get("shipping") or {}
+            listing.free_shipping = bool(shipping.get("free_shipping", False))
+            listing.logistic_type = shipping.get("logistic_type") or ""
+            if not listing.category_id:
+                listing.category_id = details.get("category_id", "")
+            enriched_count += 1
+
+        if listing.category_id and listing.price > Decimal("0"):
+            listing.ml_fee_pct = get_listing_fee(listing.price, listing.category_id)
+            if listing.ml_fee_pct is not None:
+                fee_enriched += 1
+
+        if i < len(to_enrich) - 1:
+            time.sleep(delay_seconds)
+
+    logger.info(
+        "ML Items: enriquecidos %d/%d | sold_qty=%d | taxa_real=%d",
+        len(to_enrich), len(to_enrich), enriched_count, fee_enriched
+    )
+
+    return listings
+
+
+def _build_headers(access_token: str | None) -> dict:
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "ViabilidadeSaaS/1.0",
+    }
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+    return headers
+
+
+def _round(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.01"))
+
