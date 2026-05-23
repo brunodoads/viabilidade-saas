@@ -68,6 +68,10 @@ export async function getCatalogStatus(catalogId: string): Promise<CatalogStatus
   return request<CatalogStatusResponse>(`/api/catalogs/${catalogId}/status`)
 }
 
+export async function reprocessCatalog(catalogId: string): Promise<CatalogUploadResponse> {
+  return request<CatalogUploadResponse>(`/api/catalogs/${catalogId}/reprocess`, { method: 'POST' })
+}
+
 // ─── Opportunities ────────────────────────────────────────────────────────────
 
 export async function getOpportunities(
