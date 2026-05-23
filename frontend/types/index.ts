@@ -36,12 +36,29 @@ export interface CatalogListItem {
   created_at: string
 }
 
+export interface MarketListing {
+  rank_position: number
+  item_id: string
+  title: string
+  price: number
+  sold_quantity: number
+  permalink: string
+  thumbnail: string | null
+  match_confidence: number | null
+  free_shipping: boolean | null
+  logistic_type: string | null
+  ml_fee_pct: number | null
+}
+
 export interface MarketData {
   avg_price: number
   min_price: number
   max_price: number
   total_sellers: number
   listings_above_threshold: number
+  avg_ml_fee_pct: number | null
+  free_shipping_pct: number | null
+  listings: MarketListing[]
 }
 
 export interface FinancialData {
@@ -52,6 +69,9 @@ export interface FinancialData {
   gross_margin_pct: number
   break_even_price: number
   is_viable: boolean
+  net_margin: number | null
+  net_margin_pct: number | null
+  min_price_for_target_margin: number | null
 }
 
 export interface OpportunityItem {
