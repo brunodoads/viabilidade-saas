@@ -76,6 +76,23 @@ class MarketAnalysis(Base, UUIDPrimaryKeyMixin):
         comment="Confiança média do matching nos anúncios aprovados (0.000–1.000)",
     )
 
+    # ── Taxa real ML e cobertura de frete grátis ──────────────────────────────
+    # Calculados durante o enriquecimento — usados pelo Finance Agent.
+    # avg_ml_fee_pct: média das taxas reais por categoria dos anúncios qualificados.
+    #   None = todos os anúncios falharam no enriquecimento → usa taxa padrão (config).
+    # free_shipping_pct: % de anúncios com frete grátis.
+    #   Se >50%: mercado espera frete grátis → custo de envio deve ser orçado.
+    avg_ml_fee_pct: Mapped[Decimal | None] = mapped_column(
+        Numeric(5, 2),
+        nullable=True,
+        comment="Taxa média real do ML em % (via Listing Prices API) — substitui taxa fixa de config",
+    )
+    free_shipping_pct: Mapped[Decimal | None] = mapped_column(
+        Numeric(5, 2),
+        nullable=True,
+        comment="% de anúncios qualificados com frete grátis (0–100) — sinal de expectativa do mercado",
+    )
+
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -316,32 +333,4 @@ class OpportunityScore(Base, UUIDPrimaryKeyMixin):
     rank: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
-        comment="Posição no ranking dentro do catálogo (1 = melhor oportunidade)",
-    )
-    recommendation: Mapped[Recommendation] = mapped_column(
-        SAEnum(Recommendation, name="recommendation_enum", create_type=False),
-        nullable=False,
-        comment="Classificação qualitativa da oportunidade",
-    )
-    explanation: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-        comment="Explicação textual gerada pelo Strategy Agent, ex: 'Alta demanda e boa margem.'",
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-    )
-
-    # Relacionamento
-    product: Mapped[Product] = relationship(  # type: ignore[name-defined]
-        "Product",
-        back_populates="opportunity_score",
-    )
-
-    def __repr__(self) -> str:
-        return (
-            f"<OpportunityScore product_id={self.product_id} "
-            f"score={self.final_score} rank=#{self.rank} rec={self.recommendation}>"
-        )
+        comment="Posição no rank

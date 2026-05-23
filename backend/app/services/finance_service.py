@@ -26,6 +26,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy.orm import Session
 
+from app.models.analysis import MarketAnalysis
 from app.models.product import Product
 from app.repositories.opportunity_repo import FinancialAnalysisRepository
 
@@ -109,6 +110,54 @@ class FeeConfig:
             # Imposto: Simples Nacional sobre receita bruta
             tax_pct=Decimal(str(settings.ML_TAX_PCT)),
             # Margem líquida mínima para is_viable
+            min_viable_margin_pct=Decimal(str(settings.ML_MIN_VIABLE_MARGIN_PCT)),
+        )
+
+    @classmethod
+    def from_market_analysis(cls, market_analysis: "MarketAnalysis") -> "FeeConfig":
+        """
+        Cria FeeConfig usando dados reais coletados do mercado.
+
+        Prioridade da taxa ML:
+            1. avg_ml_fee_pct da análise (taxa real por categoria via Listing Prices API)
+            2. settings.ML_FEE_PCT (taxa configurada, padrão 11%)
+
+        Lógica de frete (shipping_cost):
+            - free_shipping_pct: % dos top anúncios com frete grátis
+            - Se > 50%: mercado ESPERA frete grátis → o seller deve absorver o custo
+              → usa ML_SHIPPING_COST_BRL (padrão R$20) como custo interno
+            - Se <= 50%: frete pode ser cobrado do comprador → custo interno = R$0
+              (o frete sai do bolso do comprador, não reduz margem do seller)
+            - None: sem dados → usa configuração padrão
+
+        Args:
+            market_analysis: MarketAnalysis com avg_ml_fee_pct e free_shipping_pct populados
+        """
+        from app.core.config import settings
+
+        # Taxa ML real por categoria (fallback: taxa de config)
+        ml_fee_pct = (
+            market_analysis.avg_ml_fee_pct
+            if market_analysis.avg_ml_fee_pct is not None
+            else Decimal(str(settings.ML_FEE_PCT))
+        )
+
+        # Custo de frete: baseado na expectativa do mercado
+        free_pct = market_analysis.free_shipping_pct
+        if free_pct is not None:
+            shipping_cost = (
+                Decimal(str(settings.ML_SHIPPING_COST_BRL))
+                if free_pct > Decimal("50")
+                else Decimal("0")
+            )
+        else:
+            # Sem dados de frete: usa custo configurado como fallback conservador
+            shipping_cost = Decimal(str(settings.ML_SHIPPING_COST_BRL))
+
+        return cls(
+            ml_fee_pct=ml_fee_pct,
+            fulfillment_cost_brl=shipping_cost,
+            tax_pct=Decimal(str(settings.ML_TAX_PCT)),
             min_viable_margin_pct=Decimal(str(settings.ML_MIN_VIABLE_MARGIN_PCT)),
         )
 
@@ -322,49 +371,4 @@ def analyze_catalog(db: Session, products: list[Product]) -> int:
         try:
             # Calcular custo unitário real.
             # Catálogos de distribuidoras listam o custo do LOTE (ex: CX24 = 24 unidades).
-            # O ML vende por unidade, então comparamos o custo unitário.
-            # Sem código de embalagem → units_per_package = 1 → unit_cost = product.cost
-            #
-            # ATENÇÃO: após db.commit(), SQLAlchemy expira os objetos (expire_on_commit=True).
-            # Acessar product.market_analysis aqui pode triggerar lazy load — mas como
-            # iteramos apenas sobre products_to_analyze (pré-filtrado), são no máximo
-            # 20 lazy loads × ~200ms = ~4s em vez de 403 × 200ms = ~80s.
-            units = extract_units_per_package(product.raw_name)
-            unit_cost = _round2(Decimal(str(product.cost)) / Decimal(str(units)))
-
-            if units > 1:
-                logger.info(
-                    "Finance: '%s' → %d unid/embalagem | custo_lote=R$%.2f | custo_unit=R$%.2f",
-                    product.search_name[:40], units, float(product.cost), float(unit_cost)
-                )
-
-            result = calculate(
-                cost=unit_cost,
-                avg_market_price=product.market_analysis.avg_price,
-                fee_config=FeeConfig.from_category(product.category),
-            )
-            repo.upsert(product_id=product.id, **result.to_db_dict())
-            analyzed += 1
-            logger.info("Finance: '%s' | %s", product.search_name[:40], result.summary())
-
-        except Exception as exc:
-            logger.error(
-                "Finance: erro '%s' (%s): %s",
-                product.search_name, product.id, exc, exc_info=True,
-            )
-            # CRÍTICO: após qualquer falha de commit (ex: DataError por overflow),
-            # a sessão SQLAlchemy entra em estado PendingRollbackError.
-            # Sem rollback explícito, TODOS os produtos seguintes falham também.
-            try:
-                db.rollback()
-            except Exception:
-                pass
-
-    logger.info("Finance: %d/%d produtos analisados", analyzed, len(products))
-    return analyzed
-
-
-# Utilitarios
-
-def _round2(value: Decimal) -> Decimal:
-    return value.quantize(_D2, rounding=ROUND_HALF_UP)
+    

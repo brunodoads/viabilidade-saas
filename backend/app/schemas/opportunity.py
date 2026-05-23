@@ -19,6 +19,10 @@ class MarketListingResponse(BaseModel):
     permalink: str | None
     thumbnail: str | None
     match_confidence: Decimal | None
+    # Frete e taxa real por anúncio
+    free_shipping: bool | None = None
+    logistic_type: str | None = None
+    ml_fee_pct: Decimal | None = None
 
 
 class MarketDataResponse(BaseModel):
@@ -31,6 +35,10 @@ class MarketDataResponse(BaseModel):
     max_price: Decimal
     total_sellers: int
     listings_above_threshold: int
+    # Taxa ML real média (None = enriquecimento falhou → usou taxa de config)
+    avg_ml_fee_pct: Decimal | None = None
+    # % de anúncios com frete grátis (0–100). >50 = mercado espera frete grátis.
+    free_shipping_pct: Decimal | None = None
     # Top anúncios ML com links diretos (carregados separadamente)
     listings: list[MarketListingResponse] = Field(default_factory=list)
 
@@ -73,21 +81,4 @@ class OpportunityResponse(BaseModel):
     # Score
     final_score: Decimal = Field(description="Score 0-100")
     rank: int = Field(description="Posição no ranking (1 = melhor)")
-    recommendation: Recommendation
-    demand_score: Decimal
-    margin_score: Decimal
-    competition_score: Decimal
-
-    # Mercado
-    market: MarketDataResponse | None
-
-    # Financeiro
-    financial: FinancialDataResponse | None
-
-
-class OpportunityListResponse(BaseModel):
-    """Lista paginada de oportunidades de um catálogo."""
-
-    catalog_id: uuid.UUID
-    total: int
-    items: list[OpportunityResponse]
+    recomme

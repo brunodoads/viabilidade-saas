@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -80,6 +80,28 @@ class MarketListing(Base, UUIDPrimaryKeyMixin):
         Numeric(4, 3),
         nullable=True,
         comment="Score de matching do produto com o anúncio (0.000–1.000)",
+    )
+
+    # ── Frete e taxa real (enriquecidos via ML APIs) ──────────────────────────
+    free_shipping: Mapped[bool | None] = mapped_column(
+        Boolean,
+        nullable=True,
+        comment="True se o vendedor oferece frete grátis neste anúncio",
+    )
+    logistic_type: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+        comment="Tipo de logística: fulfillment, drop_off, self_service, not_specified",
+    )
+    ml_fee_pct: Mapped[Decimal | None] = mapped_column(
+        Numeric(5, 2),
+        nullable=True,
+        comment="Taxa real do ML em % para esta categoria/preço (via Listing Prices API)",
+    )
+    category_id: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+        comment="ID da categoria ML (ex: MLB1648) — usado para calcular taxa real",
     )
 
     created_at: Mapped[datetime] = mapped_column(

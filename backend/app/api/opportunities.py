@@ -115,6 +115,9 @@ def list_opportunities(
                     permalink=lt.permalink,
                     thumbnail=lt.thumbnail,
                     match_confidence=lt.match_confidence,
+                    free_shipping=lt.free_shipping,
+                    logistic_type=lt.logistic_type,
+                    ml_fee_pct=lt.ml_fee_pct,
                 )
                 for lt in product_listings
             ]
@@ -124,6 +127,8 @@ def list_opportunities(
                 max_price=ma.max_price,
                 total_sellers=ma.total_sellers,
                 listings_above_threshold=ma.listings_above_threshold,
+                avg_ml_fee_pct=ma.avg_ml_fee_pct,
+                free_shipping_pct=ma.free_shipping_pct,
                 listings=listing_responses,
             )
 
@@ -158,15 +163,4 @@ def list_opportunities(
                 margin_score=score.margin_score,
                 competition_score=score.competition_score,
                 market=market_data,
-                financial=financial_data,
-            )
-        )
-
-    # Ordenar por rank (já deveria estar ordenado mas garante)
-    items.sort(key=lambda x: x.rank)
-
-    return OpportunityListResponse(
-        catalog_id=catalog_id,
-        total=len(items),
-        items=items,
-    )
+                financial=financi

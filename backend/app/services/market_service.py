@@ -142,6 +142,8 @@ def _research_with_apify(
                     avg_sold_quantity=market_data.get("avg_sold_quantity"),
                     total_sold_quantity=market_data.get("total_sold_quantity"),
                     avg_match_confidence=market_data.get("avg_match_confidence"),
+                    avg_ml_fee_pct=market_data.get("avg_ml_fee_pct"),
+                    free_shipping_pct=market_data.get("free_shipping_pct"),
                 )
 
                 # Salvar top listings com links do ML
@@ -329,6 +331,11 @@ def _research_product_apify(
             "permalink": listing.permalink or None,
             "thumbnail": listing.thumbnail or None,
             "match_confidence": round(match.score, 3),
+            # Novos campos de frete e taxa real
+            "free_shipping": listing.free_shipping,
+            "logistic_type": listing.logistic_type or None,
+            "ml_fee_pct": listing.ml_fee_pct,
+            "category_id": listing.category_id or None,
         })
 
     result["top_listings"] = top_listings
@@ -403,6 +410,11 @@ def _retry_apify_with_simplified_query(
             "permalink": listing.permalink or None,
             "thumbnail": listing.thumbnail or None,
             "match_confidence": round(match.score, 3),
+            # Novos campos de frete e taxa real
+            "free_shipping": listing.free_shipping,
+            "logistic_type": listing.logistic_type or None,
+            "ml_fee_pct": listing.ml_fee_pct,
+            "category_id": listing.category_id or None,
         })
 
     result["top_listings"] = top_listings
@@ -597,22 +609,4 @@ def _retry_ml_api_simplified(
     return aggregate_market_data(qualified, matches)
 
 
-# ── Utilitários ───────────────────────────────────────────────────────────────
-
-def _try_get_ml_token() -> str | None:
-    """Tenta obter token ML. Retorna None silenciosamente se não configurado."""
-    if not settings.ML_APP_ID or not settings.ML_CLIENT_SECRET:
-        return None
-    from app.integrations.mercadolivre import get_app_token
-    return get_app_token(
-        app_id=settings.ML_APP_ID,
-        client_secret=settings.ML_CLIENT_SECRET,
-    )
-
-
-def _simplify_query(query: str) -> str:
-    """Reduz query para 3 primeiros tokens quando não encontra resultados."""
-    tokens = query.split()
-    if len(tokens) <= 3:
-        return query
-    return " ".join(tokens[:3])
+# ── Utilitários ──────────────────────────────────────────�
