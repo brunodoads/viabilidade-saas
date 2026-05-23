@@ -7,7 +7,7 @@ from app.models.analysis import Recommendation
 
 
 class MarketListingResponse(BaseModel):
-    """Anúncio individual do ML — link direto para o produto pesquisado."""
+    """Anuncio individual do ML -- link direto para o produto pesquisado."""
 
     model_config = {"from_attributes": True}
 
@@ -19,7 +19,6 @@ class MarketListingResponse(BaseModel):
     permalink: str | None
     thumbnail: str | None
     match_confidence: Decimal | None
-    # Frete e taxa real por anúncio
     free_shipping: bool | None = None
     logistic_type: str | None = None
     ml_fee_pct: Decimal | None = None
@@ -35,11 +34,8 @@ class MarketDataResponse(BaseModel):
     max_price: Decimal
     total_sellers: int
     listings_above_threshold: int
-    # Taxa ML real média (None = enriquecimento falhou → usou taxa de config)
     avg_ml_fee_pct: Decimal | None = None
-    # % de anúncios com frete grátis (0–100). >50 = mercado espera frete grátis.
     free_shipping_pct: Decimal | None = None
-    # Top anúncios ML com links diretos (carregados separadamente)
     listings: list[MarketListingResponse] = Field(default_factory=list)
 
 
@@ -55,22 +51,19 @@ class FinancialDataResponse(BaseModel):
     gross_margin_pct: Decimal
     break_even_price: Decimal
     is_viable: bool
-    # Margem líquida real (após frete + imposto)
     net_margin: Decimal | None = None
     net_margin_pct: Decimal | None = None
-    # Preço mínimo para atingir 20% de margem líquida
     min_price_for_target_margin: Decimal | None = None
 
 
 class OpportunityResponse(BaseModel):
     """
-    Oportunidade completa — produto + mercado + financeiro + score.
+    Oportunidade completa -- produto + mercado + financeiro + score.
     Retornada no dashboard principal.
     """
 
     model_config = {"from_attributes": True}
 
-    # Produto
     product_id: uuid.UUID
     raw_name: str
     normalized_name: str | None
@@ -78,7 +71,20 @@ class OpportunityResponse(BaseModel):
     category: str | None
     cost: Decimal
 
-    # Score
     final_score: Decimal = Field(description="Score 0-100")
-    rank: int = Field(description="Posição no ranking (1 = melhor)")
-    recomme
+    rank: int = Field(description="Posicao no ranking (1 = melhor)")
+    recommendation: Recommendation
+    demand_score: Decimal
+    margin_score: Decimal
+    competition_score: Decimal
+
+    market: MarketDataResponse | None = None
+    financial: FinancialDataResponse | None = None
+
+
+class OpportunityListResponse(BaseModel):
+    """Lista de oportunidades de um catalogo."""
+
+    catalog_id: uuid.UUID
+    total: int
+    items: list[OpportunityResponse]
