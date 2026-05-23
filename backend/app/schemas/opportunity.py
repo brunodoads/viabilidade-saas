@@ -6,6 +6,21 @@ from pydantic import BaseModel, Field
 from app.models.analysis import Recommendation
 
 
+class MarketListingResponse(BaseModel):
+    """Anúncio individual do ML — link direto para o produto pesquisado."""
+
+    model_config = {"from_attributes": True}
+
+    rank_position: int
+    item_id: str
+    title: str
+    price: Decimal
+    sold_quantity: int | None
+    permalink: str | None
+    thumbnail: str | None
+    match_confidence: Decimal | None
+
+
 class MarketDataResponse(BaseModel):
     """Dados de mercado do ML para um produto."""
 
@@ -16,6 +31,8 @@ class MarketDataResponse(BaseModel):
     max_price: Decimal
     total_sellers: int
     listings_above_threshold: int
+    # Top anúncios ML com links diretos (carregados separadamente)
+    listings: list[MarketListingResponse] = Field(default_factory=list)
 
 
 class FinancialDataResponse(BaseModel):
@@ -30,6 +47,11 @@ class FinancialDataResponse(BaseModel):
     gross_margin_pct: Decimal
     break_even_price: Decimal
     is_viable: bool
+    # Margem líquida real (após frete + imposto)
+    net_margin: Decimal | None = None
+    net_margin_pct: Decimal | None = None
+    # Preço mínimo para atingir 20% de margem líquida
+    min_price_for_target_margin: Decimal | None = None
 
 
 class OpportunityResponse(BaseModel):

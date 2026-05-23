@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.product import Product
-from app.repositories.opportunity_repo import MarketAnalysisRepository
+from app.repositories.opportunity_repo import MarketAnalysisRepository, MarketListingRepository
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +105,7 @@ def _research_with_apify(
 ) -> int:
     """Pesquisa usando Apify + enriquecimento via ML Items API."""
     repo = MarketAnalysisRepository(db)
+    listing_repo = MarketListingRepository(db)
     processed = 0
 
     for i, product in enumerate(products):
@@ -142,6 +143,19 @@ def _research_with_apify(
                     total_sold_quantity=market_data.get("total_sold_quantity"),
                     avg_match_confidence=market_data.get("avg_match_confidence"),
                 )
+
+                # Salvar top listings com links do ML
+                top_listings = market_data.get("top_listings", [])
+                if top_listings:
+                    listing_repo.replace_listings(
+                        product_id=product.id,
+                        listings=top_listings,
+                    )
+                    logger.info(
+                        "Market [Apify]: '%s' → %d links ML salvos",
+                        product.search_name[:40], len(top_listings)
+                    )
+
                 processed += 1
 
         except Exception as exc:
@@ -299,8 +313,26 @@ def _research_product_apify(
             listing.sold_quantity, match.score * 100
         )
 
-    # 7. Agregar estatísticas
-    return aggregate_market_data(qualified, matches)
+    # 7. Agregar estatísticas + top listings para persistência
+    result = aggregate_market_data(qualified, matches)
+
+    # Incluir top 5 listings com links para salvar na DB
+    top_n = 5
+    top_listings = []
+    for rank, (listing, match) in enumerate(zip(qualified[:top_n], matches[:top_n]), start=1):
+        top_listings.append({
+            "rank_position": rank,
+            "item_id": listing.item_id or "",
+            "title": listing.title or "",
+            "price": listing.price,
+            "sold_quantity": listing.sold_quantity if listing.sold_quantity > 0 else None,
+            "permalink": listing.permalink or None,
+            "thumbnail": listing.thumbnail or None,
+            "match_confidence": round(match.score, 3),
+        })
+
+    result["top_listings"] = top_listings
+    return result
 
 
 def _retry_apify_with_simplified_query(
@@ -357,7 +389,24 @@ def _retry_apify_with_simplified_query(
         simplified_query, len(qualified), min_confidence_fallback * 100
     )
 
-    return aggregate_market_data(qualified, matches)
+    result = aggregate_market_data(qualified, matches)
+
+    top_n = 5
+    top_listings = []
+    for rank, (listing, match) in enumerate(zip(qualified[:top_n], matches[:top_n]), start=1):
+        top_listings.append({
+            "rank_position": rank,
+            "item_id": listing.item_id or "",
+            "title": listing.title or "",
+            "price": listing.price,
+            "sold_quantity": listing.sold_quantity if listing.sold_quantity > 0 else None,
+            "permalink": listing.permalink or None,
+            "thumbnail": listing.thumbnail or None,
+            "match_confidence": round(match.score, 3),
+        })
+
+    result["top_listings"] = top_listings
+    return result
 
 
 # ── Estratégia 2: ML API direta (fallback) ────────────────────────────────────

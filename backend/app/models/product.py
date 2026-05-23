@@ -93,6 +93,12 @@ class Product(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         uselist=False,
         cascade="all, delete-orphan",
     )
+    market_listings: Mapped[list["MarketListing"]] = relationship(  # type: ignore[name-defined]
+        "MarketListing",
+        back_populates="product",
+        cascade="all, delete-orphan",
+        order_by="MarketListing.rank_position",
+    )
 
     @property
     def search_name(self) -> str:

@@ -10,6 +10,7 @@ from app.models.analysis import (  # noqa: F401
     OpportunityScore,
     Recommendation,
 )
+from app.models.listing import MarketListing  # noqa: F401
 
 __all__ = [
     "Base",
@@ -22,4 +23,5 @@ __all__ = [
     "FinancialAnalysis",
     "OpportunityScore",
     "Recommendation",
+    "MarketListing",
 ]

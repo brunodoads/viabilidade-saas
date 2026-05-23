@@ -9,6 +9,7 @@ from app.models.analysis import (
     OpportunityScore,
     Recommendation,
 )
+from app.models.listing import MarketListing
 from app.repositories.base import BaseRepository
 
 
@@ -49,6 +50,49 @@ class FinancialAnalysisRepository(BaseRepository[FinancialAnalysis]):
             return self.save(existing)
         analysis = FinancialAnalysis(product_id=product_id, **data)
         return self.save(analysis)
+
+
+class MarketListingRepository(BaseRepository[MarketListing]):
+    def __init__(self, db: Session) -> None:
+        super().__init__(MarketListing, db)
+
+    def replace_listings(
+        self,
+        product_id: uuid.UUID,
+        listings: list[dict],
+    ) -> list[MarketListing]:
+        """
+        Substitui todos os listings existentes de um produto pelos novos.
+
+        Cada dict em `listings` deve conter:
+            rank_position, item_id, title, price, sold_quantity (opt),
+            permalink (opt), thumbnail (opt), match_confidence (opt)
+
+        Deleta primeiro para garantir consistência sem lidar com
+        conflitos de índice único (product_id, rank_position).
+        """
+        # Deletar listings antigos do produto
+        self.db.query(MarketListing).filter(
+            MarketListing.product_id == product_id
+        ).delete(synchronize_session=False)
+
+        # Inserir novos
+        saved = []
+        for data in listings:
+            listing = MarketListing(product_id=product_id, **data)
+            self.db.add(listing)
+            saved.append(listing)
+
+        self.db.flush()
+        return saved
+
+    def get_by_product(self, product_id: uuid.UUID) -> list[MarketListing]:
+        return (
+            self.db.query(MarketListing)
+            .filter(MarketListing.product_id == product_id)
+            .order_by(MarketListing.rank_position.asc())
+            .all()
+        )
 
 
 class OpportunityScoreRepository(BaseRepository[OpportunityScore]):

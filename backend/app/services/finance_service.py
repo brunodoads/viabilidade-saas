@@ -81,8 +81,8 @@ class FeeConfig:
     """
     Configuracao de taxas e custos para calculo de margem.
 
-    MVP: apenas ml_fee_pct impacta o resultado.
-    Fase 2: demais campos sao ativados sem alterar a interface do calculo.
+    MVP: ml_fee_pct + fulfillment_cost_brl + tax_pct + min_viable_margin_pct
+    Fase 2: ads_pct, return_rate_pct, packaging_cost_brl
     """
 
     ml_fee_pct: Decimal = Decimal("15.00")
@@ -91,6 +91,9 @@ class FeeConfig:
     packaging_cost_brl: Decimal = Decimal("0.00")
     fulfillment_cost_brl: Decimal = Decimal("0.00")
     tax_pct: Decimal = Decimal("0.00")
+    # Margem líquida mínima para produto ser VIÁVEL (%).
+    # Padrão 20% = mínimo recomendado para e-commerce sustentável.
+    min_viable_margin_pct: Decimal = Decimal("20.00")
 
     @classmethod
     def default(cls) -> "FeeConfig":
@@ -99,7 +102,15 @@ class FeeConfig:
     @classmethod
     def from_settings(cls) -> "FeeConfig":
         from app.core.config import settings
-        return cls(ml_fee_pct=Decimal(str(settings.ML_FEE_PCT)))
+        return cls(
+            ml_fee_pct=Decimal(str(settings.ML_FEE_PCT)),
+            # Frete via Mercado Envios — obrigatório para frete grátis
+            fulfillment_cost_brl=Decimal(str(settings.ML_SHIPPING_COST_BRL)),
+            # Imposto: Simples Nacional sobre receita bruta
+            tax_pct=Decimal(str(settings.ML_TAX_PCT)),
+            # Margem líquida mínima para is_viable
+            min_viable_margin_pct=Decimal(str(settings.ML_MIN_VIABLE_MARGIN_PCT)),
+        )
 
     @classmethod
     def from_category(cls, category: str | None) -> "FeeConfig":
@@ -143,6 +154,8 @@ class FinancialResult:
     is_viable: bool = field(init=False)
     net_margin: Decimal | None = field(init=False, default=None)
     net_margin_pct: Decimal | None = field(init=False, default=None)
+    # Preço mínimo de venda para atingir a margem líquida alvo (padrão 20%)
+    min_price_for_target_margin: Decimal | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         self._compute()
@@ -164,11 +177,13 @@ class FinancialResult:
             self.is_viable = False
             return
 
+        # ── Margem BRUTA (sem frete/imposto) ────────────────────────────────
         self.ml_fee = _round2(price * cfg.ml_fee_pct / _HUNDRED)
         self.gross_revenue = price
         self.gross_margin = _round2(price - cost - self.ml_fee)
         self.gross_margin_pct = _round2(self.gross_margin / price * _HUNDRED)
 
+        # Break-even: preço mínimo para cobrir custo + taxa ML
         fee_rate = cfg.ml_fee_pct / _HUNDRED
         if fee_rate >= _ONE:
             self.break_even_price = price
@@ -179,22 +194,51 @@ class FinancialResult:
             raw_safety = _round2(
                 (price - self.break_even_price) / self.break_even_price * _HUNDRED
             )
-            # Clamp para o limite Numeric(5,2) do PostgreSQL (max 999.99).
-            # Produtos muito baratos vs. preço ML (ex: custo=8.50, ML=190) geram
-            # valores >1000%, que causam DataError e corrompem a sessão SQLAlchemy.
+            # Clamp para o limite Numeric(10,2) do PostgreSQL.
             self.price_safety_margin_pct = min(raw_safety, _MAX_SAFETY_PCT)
         else:
             self.price_safety_margin_pct = _ZERO
 
-        self.is_viable = self.gross_margin > _ZERO
-
+        # ── Margem LÍQUIDA (com frete + imposto + ADS + devoluções) ─────────
+        # has_phase2_costs() é True sempre que fulfillment_cost_brl > 0 ou tax_pct > 0,
+        # ou seja: sempre quando FeeConfig.from_settings() é usado (frete=R$20, imposto=7%).
         if cfg.has_phase2_costs():
             ads = _round2(price * cfg.ads_pct / _HUNDRED)
             return_cost = _round2(cost * cfg.return_rate_pct / _HUNDRED)
-            fixed_costs = cfg.total_fixed_brl
+            fixed_costs = cfg.total_fixed_brl      # frete + embalagem
             tax = _round2(price * cfg.tax_pct / _HUNDRED)
             self.net_margin = _round2(self.gross_margin - ads - return_cost - fixed_costs - tax)
-            self.net_margin_pct = _round2(self.net_margin / price * _HUNDRED) if price > _ZERO else _ZERO
+            self.net_margin_pct = _round2(self.net_margin / price * _HUNDRED)
+
+        # ── is_viable: com custos reais, exige margem líquida >= target ─────
+        # Sem custos reais (FeeConfig.default()), usa sinal simples gross_margin > 0.
+        # Com custos reais (from_settings()), exige net_margin_pct >= min_viable_margin_pct.
+        if cfg.has_phase2_costs() and self.net_margin is not None:
+            self.is_viable = self.net_margin_pct >= cfg.min_viable_margin_pct
+        else:
+            self.is_viable = self.gross_margin > _ZERO
+
+        # ── min_price_for_target_margin ──────────────────────────────────────
+        # Preço mínimo de venda para atingir exatamente min_viable_margin_pct de margem líquida.
+        #
+        # Dedução:
+        #   net_margin = price - cost - (ml_fee_pct/100)*price - (tax_pct/100)*price
+        #              - (ads_pct/100)*price - shipping - return_cost
+        #   net_margin_pct = net_margin / price
+        #   Queremos: net_margin_pct = target_pct / 100
+        #   → price * (1 - ml_fee_pct/100 - tax_pct/100 - ads_pct/100 - target_pct/100)
+        #       = cost + shipping + return_cost
+        #   → price = (cost + shipping) / (1 - variable_rates - target_rate)
+        #   (return_cost ignorado: return_rate=0 no MVP)
+        if cfg.has_phase2_costs():
+            variable_rate = (cfg.ml_fee_pct + cfg.tax_pct + cfg.ads_pct) / _HUNDRED
+            target_rate = cfg.min_viable_margin_pct / _HUNDRED
+            denominator = _ONE - variable_rate - target_rate
+            if denominator > _ZERO:
+                self.min_price_for_target_margin = _round2(
+                    (cost + cfg.total_fixed_brl) / denominator
+                )
+            # Se denominator <= 0: matematicamente impossível — deixa None
 
     def to_db_dict(self) -> dict:
         return {
@@ -220,14 +264,19 @@ class FinancialResult:
                 if self.fee_config.tax_pct > _ZERO else None,
             "net_margin": self.net_margin,
             "net_margin_pct": self.net_margin_pct,
+            "min_price_for_target_margin": self.min_price_for_target_margin,
         }
 
     def summary(self) -> str:
         status = "VIÁVEL" if self.is_viable else "NÃO VIÁVEL"
+        net_info = (
+            f" | líquida={self.net_margin_pct}% min_preco=R${self.min_price_for_target_margin}"
+            if self.net_margin_pct is not None else ""
+        )
         return (
             f"{status} | custo=R${self.cost} preco=R${self.avg_market_price} "
-            f"taxa=R${self.ml_fee} margem={self.gross_margin_pct}% "
-            f"break_even=R${self.break_even_price}"
+            f"taxa=R${self.ml_fee} bruta={self.gross_margin_pct}%"
+            f"{net_info}"
         )
 
 

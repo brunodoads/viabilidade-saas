@@ -209,12 +209,17 @@ class FinancialAnalysis(Base, UUIDPrimaryKeyMixin):
     net_margin: Mapped[Decimal | None] = mapped_column(
         Numeric(12, 2),
         nullable=True,
-        comment="[Fase 2] Margem líquida em R$ (todos os custos deduzidos)",
+        comment="Margem líquida em R$ (deduzidos frete + imposto + ADS + devoluções)",
     )
     net_margin_pct: Mapped[Decimal | None] = mapped_column(
-        Numeric(5, 2),
+        Numeric(10, 2),
         nullable=True,
-        comment="[Fase 2] Margem líquida em %",
+        comment="Margem líquida em % sobre receita",
+    )
+    min_price_for_target_margin: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 2),
+        nullable=True,
+        comment="Preço mínimo de venda para atingir a margem líquida alvo (padrão 20%)",
     )
     # ─────────────────────────────────────────────────────────────────────────
 

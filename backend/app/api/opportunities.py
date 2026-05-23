@@ -11,9 +11,11 @@ from app.models.catalog import CatalogStatus
 from app.models.user import User
 from app.repositories.catalog_repo import CatalogRepository
 from app.repositories.product_repo import ProductRepository
+from app.repositories.opportunity_repo import MarketListingRepository
 from app.schemas.opportunity import (
     FinancialDataResponse,
     MarketDataResponse,
+    MarketListingResponse,
     OpportunityListResponse,
     OpportunityResponse,
 )
@@ -70,6 +72,20 @@ def list_opportunities(
     product_repo = ProductRepository(db)
     products = product_repo.get_by_catalog_with_analyses(catalog_id=catalog_id)
 
+    # Pré-carregar listings para todos os produtos em uma única query
+    listing_repo = MarketListingRepository(db)
+    from app.models.listing import MarketListing
+    product_ids = [p.id for p in products]
+    all_listings = (
+        db.query(MarketListing)
+        .filter(MarketListing.product_id.in_(product_ids))
+        .order_by(MarketListing.product_id, MarketListing.rank_position)
+        .all()
+    )
+    listings_by_product: dict = {}
+    for listing in all_listings:
+        listings_by_product.setdefault(listing.product_id, []).append(listing)
+
     # Montar response consolidado
     items: list[OpportunityResponse] = []
 
@@ -87,12 +103,28 @@ def list_opportunities(
         market_data = None
         if product.market_analysis:
             ma = product.market_analysis
+            # Montar lista de listings com links ML
+            product_listings = listings_by_product.get(product.id, [])
+            listing_responses = [
+                MarketListingResponse(
+                    rank_position=lt.rank_position,
+                    item_id=lt.item_id,
+                    title=lt.title,
+                    price=lt.price,
+                    sold_quantity=lt.sold_quantity,
+                    permalink=lt.permalink,
+                    thumbnail=lt.thumbnail,
+                    match_confidence=lt.match_confidence,
+                )
+                for lt in product_listings
+            ]
             market_data = MarketDataResponse(
                 avg_price=ma.avg_price,
                 min_price=ma.min_price,
                 max_price=ma.max_price,
                 total_sellers=ma.total_sellers,
                 listings_above_threshold=ma.listings_above_threshold,
+                listings=listing_responses,
             )
 
         financial_data = None
@@ -106,6 +138,9 @@ def list_opportunities(
                 gross_margin_pct=fa.gross_margin_pct,
                 break_even_price=fa.break_even_price,
                 is_viable=fa.is_viable,
+                net_margin=fa.net_margin,
+                net_margin_pct=fa.net_margin_pct,
+                min_price_for_target_margin=fa.min_price_for_target_margin,
             )
 
         items.append(

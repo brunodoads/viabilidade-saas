@@ -47,7 +47,28 @@ class Settings(BaseSettings):
     # Aumentar para 0.40+ após confirmar que pipeline produz dados.
     ML_MIN_MATCH_CONFIDENCE: float = 0.15
 
-    ML_FEE_PCT: float = 15.0
+    # Taxa de venda do ML — depende do tipo de anúncio e categoria:
+    #   Clássico: 11% (mais comum para iniciantes)
+    #   Premium:  16% (mais visibilidade, custo maior)
+    # Simulador oficial: https://www.mercadolivre.com.br/simulador-de-custos
+    ML_FEE_PCT: float = 11.0
+
+    # Custo médio de frete via Mercado Envios (obrigatório p/ frete grátis).
+    # O ML cobre 50% para vendedores com boa reputação (MercadoLíder).
+    # Para novos vendedores sem reputação, o custo total é ~R$45.
+    # Padrão R$20 = estimativa conservadora para vendedor com reputação média.
+    ML_SHIPPING_COST_BRL: float = 20.0
+
+    # Imposto sobre vendas (% do valor de venda).
+    # Simples Nacional Anexo I (comércio): varia de 4% (< R$180k/ano) a 19,5%.
+    # Padrão 7% = estimativa para vendedor com faturamento entre R$180k-360k.
+    ML_TAX_PCT: float = 7.0
+
+    # Margem líquida mínima para considerar um produto VIÁVEL (%).
+    # Abaixo desse threshold, o produto é classificado como EVITAR.
+    # Padrão 20% = margem mínima recomendada para e-commerce sustentável.
+    ML_MIN_VIABLE_MARGIN_PCT: float = 20.0
+
     # Threshold de vendas mínimas: 0 = sem filtro (modo diagnóstico).
     # Sem auth ML, sold_quantity=0 em todos os anúncios — filtro >0 eliminaria tudo.
     # Aumentar para 100+ apenas após confirmar autenticação ML funcionando.
