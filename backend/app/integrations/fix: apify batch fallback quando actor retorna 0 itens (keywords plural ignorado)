@@ -153,7 +153,9 @@ def search_listings_batch(
             403 produtos individual: 403 × 20s = 134 minutos
             403 produtos batch:      11 × 40s  = 7 minutos
 
-    O actor karamelo suporta o parâmetro `keywords` (lista de strings).
+    NOTA: o actor karamelo aceita apenas `keyword` singular. O campo `keywords`
+    (lista) e silenciosamente ignorado -> retorna 200 com 0 itens -> `_fetch_batch()`
+    detecta e aciona `_fetch_batch_fallback()` com chamadas individuais.
     Cada item retornado tem o campo `palavraChave` indicando qual keyword gerou.
 
     Returns:
@@ -306,6 +308,17 @@ def _fetch_batch(queries, api_token, actor_id, max_pages, batch_idx, total_batch
         "Apify ML Batch [%d/%d]: %d keywords → %d listings totais",
         batch_idx + 1, total_batches, len(queries), total_items
     )
+
+
+    # Se batch retornou 0 itens para N queries, o actor ignorou 'keywords'
+    # (retorna 200 vazio em vez de 400). Fallback automatico para chamadas individuais.
+    if total_items == 0 and len(queries) > 0:
+        logger.warning(
+            "Apify ML Batch [%d/%d]: 0 itens para %d queries (200 vazio) -- "
+            "actor nao suporta keywords array. Usando fallback individual.",
+            batch_idx + 1, total_batches, len(queries)
+        )
+        return _fetch_batch_fallback(queries, api_token, actor_id, max_pages)
 
     return batch_results
 
