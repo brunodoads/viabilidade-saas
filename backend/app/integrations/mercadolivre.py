@@ -181,30 +181,26 @@ def search_listings(
                 "q": query,
                 "limit": PAGE_SIZE,
                 "offset": offset,
-                # Não usar sort=sold_quantity_desc — não é um sort válido da API pública.
-                # Buscamos relevância (padrão) e filtramos sold_quantity depois.
             }
 
             raw_items = _fetch_page(client, url, params, headers, query, result)
             if raw_items is None:
-                break  # Erro irrecuperável ou resultado vazio
+                break
 
             items = _parse_listings(raw_items)
             result.listings.extend(items)
             result.pages_fetched += 1
 
-            # Se temos menos resultados que o tamanho da página, não há mais dados
             if len(raw_items) < PAGE_SIZE:
                 break
 
-            # Throttle entre páginas
             if page < MAX_PAGES - 1:
                 time.sleep(0.3)
 
     result.total_found = len(result.listings)
 
     logger.info(
-        "ML Search: '%s' → %d anúncios em %d página(s) | erros=%d",
+        "ML Search: '%s' -> %d anuncios em %d pagina(s) | erros=%d",
         query, result.total_found, result.pages_fetched, len(result.api_errors)
     )
 
@@ -238,7 +234,6 @@ def _fetch_page(
         try:
             response = client.get(url, params=params, headers=headers)
 
-            # Rate limit — respeitar Retry-After
             if response.status_code == 429:
                 retry_after = int(response.headers.get("Retry-After", delay * 2))
                 logger.warning(
@@ -248,26 +243,22 @@ def _fetch_page(
                 time.sleep(retry_after)
                 continue
 
-            # Sem autenticação — log e desiste (não adianta retentar)
             if response.status_code == 403:
                 msg = "ML API: acesso negado (403). Configure ML_APP_ID e ML_CLIENT_SECRET no .env"
                 logger.error(msg)
                 result.api_errors.append(msg)
                 return None
 
-            # Auth inválida
             if response.status_code == 401:
                 msg = "ML API: token inválido ou expirado (401). Renovar credenciais."
                 logger.error(msg)
                 result.api_errors.append(msg)
-                # Invalida cache para próxima chamada obter novo token
                 _token_cache["access_token"] = None
                 return None
 
-            # Servidor indisponível — tenta novamente
             if response.status_code in (503, 504):
                 logger.warning(
-                    "ML API: servidor indisponível %d (tentativa %d/%d)",
+                    "ML API: servidor indisponivel %d (tentativa %d/%d)",
                     response.status_code, attempt + 1, len(RETRY_DELAYS)
                 )
                 time.sleep(delay)
@@ -291,7 +282,7 @@ def _fetch_page(
                 exc.response.status_code, query, exc.response.text[:200]
             )
             result.api_errors.append(f"HTTP {exc.response.status_code}")
-            return None  # Não retry em outros erros HTTP
+            return None
 
         except Exception as exc:
             last_exc = exc
@@ -299,7 +290,7 @@ def _fetch_page(
             time.sleep(delay)
 
     if last_exc:
-        result.api_errors.append(f"Falhou após {len(RETRY_DELAYS)} tentativas: {last_exc}")
+        result.api_errors.append(f"Falhou apos {len(RETRY_DELAYS)} tentativas: {last_exc}")
 
     return None
 
@@ -324,7 +315,6 @@ def _parse_listings(raw_items: list[dict]) -> list[MLListing]:
             price_raw = item.get("price")
             sold_qty = item.get("sold_quantity", 0)
 
-            # Validações básicas — dados corrompidos ou anúncios sem preço
             if not item_id or not title:
                 continue
             if price_raw is None or price_raw <= 0:
@@ -354,18 +344,72 @@ def _parse_listings(raw_items: list[dict]) -> list[MLListing]:
 
 # ── Estatísticas de mercado ───────────────────────────────────────────────────
 
-def aggregate_market_data(listings: list[MLListing], matches: list | None = None) -> dict | None:
+def _competitive_price_stats(prices: list) -> tuple:
     """
-    Calcula estatísticas de mercado a partir de uma lista de anúncios qualificados.
+    Calcula preco competitivo eliminando outliers.
 
-    Usado pelo market_service após aplicar filtros de sold_quantity e matching.
+    Estrategia:
+    - Remove os 10% mais baratos (loss-leaders / produtos diferentes)
+    - Remove os 20% mais caros (outliers / produtos premium fora do nicho)
+    - Usa a mediana dos precos restantes como preco de referencia
+    - P25 e P75 do conjunto trimmed como faixa competitiva
 
-    Args:
-        listings: Anúncios já filtrados (por vendas e por confiança de matching)
-        matches:  Lista de MatchResult correspondente — usada para avg_match_confidence.
+    Racional: no ML, o preco relevante nao e o mais barato nem o mais caro.
+    E o preco onde a maioria dos anuncios competitivos se concentra.
+    Ex: cabo HDMI 3m — ignora R$8 (barato suspeito) e R$200 (outlier premium),
+    foca em R$18-R$35 onde estao os anuncios com 1k+ vendas.
+
+    Para listas pequenas (<=3 itens), usa mediana sem trimming.
 
     Returns:
-        Dict com estatísticas ou None se lista vazia
+        (competitive_price, price_p25, price_p75) como float
+    """
+    if not prices:
+        return 0.0, 0.0, 0.0
+
+    sorted_prices = sorted(float(p) for p in prices)
+    n = len(sorted_prices)
+
+    if n <= 3:
+        mid = n // 2
+        if n % 2 != 0:
+            median = sorted_prices[mid]
+        else:
+            median = (sorted_prices[mid - 1] + sorted_prices[mid]) / 2
+        return median, sorted_prices[0], sorted_prices[-1]
+
+    # Trim: remove bottom 10% e top 20%
+    low_cut = max(1, round(n * 0.10))
+    high_cut = max(1, round(n * 0.20))
+    trimmed = sorted_prices[low_cut: n - high_cut]
+
+    if not trimmed:
+        trimmed = sorted_prices
+
+    t = len(trimmed)
+    mid = t // 2
+    if t % 2 != 0:
+        median = trimmed[mid]
+    else:
+        median = (trimmed[mid - 1] + trimmed[mid]) / 2
+
+    # Faixa competitiva: P25 e P75 do conjunto trimmed
+    p25 = trimmed[max(0, int(t * 0.25))]
+    p75 = trimmed[min(t - 1, int(t * 0.75))]
+
+    return median, p25, p75
+
+
+def aggregate_market_data(listings: list, matches: list | None = None) -> dict | None:
+    """
+    Calcula estatisticas de mercado a partir de uma lista de anuncios qualificados.
+
+    Preco de referencia: mediana do cluster competitivo (sem outliers).
+    Remove os 10% mais baratos (loss-leaders) e 20% mais caros (premium outliers).
+    avg_price = preco competitivo (mediana trimmed) — usado pelo finance_service.
+    min_price/max_price = faixa P25-P75, nao extremos absolutos.
+
+    Usado pelo market_service apos aplicar filtros de sold_quantity e matching.
     """
     if not listings:
         return None
@@ -375,12 +419,24 @@ def aggregate_market_data(listings: list[MLListing], matches: list | None = None
     total_sold = sum(l.sold_quantity for l in listings)
     avg_sold = total_sold / len(listings) if listings else 0
 
-    # Confiança média dos matches aprovados
+    # Preco competitivo: mediana trimmed + faixa P25-P75
+    competitive_price, price_p25, price_p75 = _competitive_price_stats(prices)
+
+    # Log diagnostico: diferenca entre media simples e preco competitivo
+    simple_avg = float(sum(prices) / len(prices))
+    if simple_avg > 0 and abs(competitive_price - simple_avg) / simple_avg > 0.10:
+        logger.debug(
+            "aggregate_market_data: preco competitivo R$%.2f vs media simples R$%.2f "
+            "(faixa competitiva R$%.2f-R$%.2f, n=%d)",
+            competitive_price, simple_avg, price_p25, price_p75, len(prices)
+        )
+
+    # Confianca media dos matches aprovados
     avg_confidence = None
     if matches:
         avg_confidence = round(sum(m.score for m in matches) / len(matches), 3)
 
-    # Taxa ML real média
+    # Taxa ML real media (apenas dos anuncios com taxa disponivel)
     fees = [l.ml_fee_pct for l in listings if l.ml_fee_pct is not None]
     avg_ml_fee_pct = _round(sum(fees) / len(fees)) if fees else None
 
@@ -389,9 +445,11 @@ def aggregate_market_data(listings: list[MLListing], matches: list | None = None
     free_shipping_pct = _round(Decimal(str(free_count)) / Decimal(str(len(listings))) * Decimal("100"))
 
     return {
-        "avg_price": _round(sum(prices) / len(prices)),
-        "min_price": _round(min(prices)),
-        "max_price": _round(max(prices)),
+        # avg_price = preco competitivo (mediana trimmed)
+        "avg_price": _round(Decimal(str(round(competitive_price, 2)))),
+        # min/max = faixa competitiva P25-P75, nao extremos absolutos
+        "min_price": _round(Decimal(str(round(price_p25, 2)))),
+        "max_price": _round(Decimal(str(round(price_p75, 2)))),
         "total_sellers": len(seller_ids),
         "total_listings_found": len(listings),
         "listings_above_threshold": len(listings),
@@ -407,20 +465,20 @@ def aggregate_market_data(listings: list[MLListing], matches: list | None = None
 
 def get_item_details(item_id: str, access_token: str | None = None) -> dict | None:
     """
-    Busca detalhes de um item específico via ML Items API.
+    Busca detalhes de um item especifico via ML Items API.
 
-    Este endpoint NÃO está bloqueado (diferente do /sites/MLB/search).
+    Este endpoint NAO esta bloqueado (diferente do /sites/MLB/search).
     Retorna sold_quantity real, condition, listing_type, e outros campos.
 
     Usado para enriquecer listings obtidos via Apify com sold_quantity.
 
     Args:
         item_id:      ID do item ML (ex: "MLB4290861023")
-        access_token: Token OAuth. None = tenta sem autenticação (funciona para itens públicos).
+        access_token: Token OAuth. None = tenta sem autenticacao (funciona para itens publicos).
 
     Returns:
-        Dict com campos do item ou None em caso de erro/item não encontrado.
-        Campos úteis: sold_quantity, condition, listing_type_id, seller.id, price
+        Dict com campos do item ou None em caso de erro/item nao encontrado.
+        Campos uteis: sold_quantity, condition, listing_type_id, seller.id, price
     """
     if not item_id:
         return None
@@ -433,7 +491,7 @@ def get_item_details(item_id: str, access_token: str | None = None) -> dict | No
             response = client.get(url, headers=headers)
 
             if response.status_code == 404:
-                logger.debug("ML Items: item %s não encontrado (404)", item_id)
+                logger.debug("ML Items: item %s nao encontrado (404)", item_id)
                 return None
 
             if response.status_code in (401, 403):
@@ -441,7 +499,7 @@ def get_item_details(item_id: str, access_token: str | None = None) -> dict | No
                     "ML Items: acesso negado para %s (%d) — item pode ser privado",
                     item_id, response.status_code
                 )
-                return None
+      2         return None
 
             response.raise_for_status()
             return response.json()
@@ -452,7 +510,6 @@ def get_item_details(item_id: str, access_token: str | None = None) -> dict | No
     except Exception as exc:
         logger.error("ML Items: erro ao buscar item %s: %s", item_id, exc)
         return None
-
 
 
 def get_listing_fee(
@@ -476,82 +533,34 @@ def get_listing_fee(
         logger.debug("ML Listing Prices: erro categoria '%s': %s", category_id, exc)
         return None
 
+
 def enrich_listings_with_sold_quantity(
-    listings: list["MLListing"],
+    listings: list,
     access_token: str | None = None,
     max_to_enrich: int = 20,
     delay_seconds: float = 0.2,
-) -> list["MLListing"]:
+) -> list:
     """
     Enriquece listings com sold_quantity real via ML Items API.
 
     Chamado depois da filtragem por matching para evitar chamadas
-    desnecessárias em listings que serão descartados.
+    desnecessarias em listings que serao descartados.
 
     Args:
-        listings:       Lista de MLListings (geralmente já filtrada por matching)
+        listings:       Lista de MLListings (geralmente ja filtrada por matching)
         access_token:   Token OAuth (None = tenta sem auth)
-        max_to_enrich:  Máximo de items a enriquecer (evita muitas chamadas)
-        delay_seconds:  Pausa entre chamadas à API
+        max_to_enrich:  Maximo de items a enriquecer (evita muitas chamadas)
+        delay_seconds:  Pausa entre chamadas a API
 
     Returns:
-        Lista com sold_quantity atualizado onde disponível.
-        Listings sem item_id válido ou que falharam permanecem com sold_quantity=0.
+        Lista com sold_quantity atualizado onde disponivel.
+        Listings sem item_id valido ou que falharam permanecem com sold_quantity=0.
     """
     if not listings:
         return listings
 
     to_enrich = listings[:max_to_enrich]
     enriched_count = 0
-
     fee_enriched = 0
-    for i, listing in enumerate(to_enrich):
-        if not listing.item_id:
-            continue
 
-        details = get_item_details(listing.item_id, access_token)
-        if details:
-            listing.sold_quantity = int(details.get("sold_quantity", 0) or 0)
-            if not listing.condition:
-                listing.condition = details.get("condition", "")
-            if not listing.listing_type:
-                listing.listing_type = details.get("listing_type_id", "")
-            if listing.seller_id == 0:
-                seller = details.get("seller", {}) or {}
-                listing.seller_id = int(seller.get("id", 0) or 0)
-            shipping = details.get("shipping") or {}
-            listing.free_shipping = bool(shipping.get("free_shipping", False))
-            listing.logistic_type = shipping.get("logistic_type") or ""
-            if not listing.category_id:
-                listing.category_id = details.get("category_id", "")
-            enriched_count += 1
-
-        if listing.category_id and listing.price > Decimal("0"):
-            listing.ml_fee_pct = get_listing_fee(listing.price, listing.category_id)
-            if listing.ml_fee_pct is not None:
-                fee_enriched += 1
-
-        if i < len(to_enrich) - 1:
-            time.sleep(delay_seconds)
-
-    logger.info(
-        "ML Items: enriquecidos %d/%d | sold_qty=%d | taxa_real=%d",
-        len(to_enrich), len(to_enrich), enriched_count, fee_enriched
-    )
-
-    return listings
-
-
-def _build_headers(access_token: str | None) -> dict:
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": "ViabilidadeSaaS/1.0",
-    }
-    if access_token:
-        headers["Authorization"] = f"Bearer {access_token}"
-    return headers
-
-
-def _round(value: Decimal) -> Decimal:
-    return value.quantize(Decimal("0.01"))
-
+ 
