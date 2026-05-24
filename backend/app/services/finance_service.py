@@ -60,12 +60,20 @@ def extract_units_per_package(product_name: str) -> int:
 
     Returns:
         Número de unidades (mínimo 1). 1 = produto vendido individualmente.
+
+    Limite de sanidade: valores > 144 são descartados (provavelmente dimensões
+    físicas do produto como "700 x 350 mm" capturadas erroneamente pelo padrão
+    NxM). Embalagens comerciais raramente excedem 144 unidades (1 grosa).
     """
     match = _UNITS_PER_PKG_RE.search(product_name)
     if match:
         for group in match.groups():
             if group is not None:
-                return max(1, int(group))
+                units = int(group)
+                if units > 144:
+                    # Provavelmente dimensão física (ex: 700x350 mm), não quantidade
+                    return 1
+                return max(1, units)
     return 1
 
 _D2 = Decimal("0.01")
