@@ -499,7 +499,7 @@ def get_item_details(item_id: str, access_token: str | None = None) -> dict | No
                     "ML Items: acesso negado para %s (%d) — item pode ser privado",
                     item_id, response.status_code
                 )
-      2         return None
+                return None
 
             response.raise_for_status()
             return response.json()
