@@ -83,7 +83,10 @@ class MarketListingRepository(BaseRepository[MarketListing]):
             self.db.add(listing)
             saved.append(listing)
 
-        self.db.flush()
+        # Commit explícito — garante que o último produto da fila também persiste.
+        # Usar flush() dependia de um commit futuro (próximo repo.upsert), mas se o
+        # último produto não tiver um próximo, os listings ficavam perdidos na transação.
+        self.db.commit()
         return saved
 
     def get_by_product(self, product_id: uuid.UUID) -> list[MarketListing]:
