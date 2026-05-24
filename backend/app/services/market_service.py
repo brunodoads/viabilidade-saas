@@ -1,19 +1,19 @@
 """
 Market Service â Pesquisa de mercado no Mercado Livre.
 
-EstratÃ©gia de busca (em ordem de prioridade):
-    1. Apify BATCH (quando APIFY_API_TOKEN configurado) â MODO PADRÃO
+Estratégia de busca (em ordem de prioridade):
+    1. Apify BATCH (quando APIFY_API_TOKEN configurado) â MODO PADRàO
        ââ Agrupa N queries em batches de 40 por chamada Apify
        ââ Performance: 403 produtos em ~7min (vs ~134min no modo individual)
-       ââ ApÃ³s filtragem por matching, enriquece com sold_quantity via ML Items API
+       ââ Após filtragem por matching, enriquece com sold_quantity via ML Items API
     2. ML API direta (fallback â endpoint bloqueado desde 2024)
        ââ Mantido para quando ML liberar acesso oficial
-    3. Sem autenticaÃ§Ã£o (Ãºltimo recurso â retorna sold_quantity=0)
+    3. Sem autenticaà§à£o (àºltimo recurso â retorna sold_quantity=0)
 
 Por que batch:
-    O /sites/MLB/search estÃ¡ bloqueado por polÃ­tica do ML para developers
-    sem certificaÃ§Ã£o. Apify contorna isso. O batch agrupa 40 keywords por
-    chamada ao invÃ©s de 1, reduzindo de N chamadas para ceil(N/40).
+    O /sites/MLB/search està¡ bloqueado por polà­tica do ML para developers
+    sem certificaà§à£o. Apify contorna isso. O batch agrupa 40 keywords por
+    chamada ao invés de 1, reduzindo de N chamadas para ceil(N/40).
 
     Fluxo batch:
         1. Coleta todas as queries dos produtos a pesquisar
@@ -21,11 +21,11 @@ Por que batch:
         3. Processa resultado por produto (matching + enriquecimento via Items API)
         4. Segunda rodada batch para produtos sem resultado (query simplificada)
 
-Logs detalhados de cada etapa para diagnÃ³stico em produÃ§Ã£o.
+Logs detalhados de cada etapa para diagnóstico em produà§à£o.
 
 Fase 2:
     - Redis cache (TTL 1h por query)
-    - MÃºltiplos marketplaces via adapter pattern
+    - Màºltiplos marketplaces via adapter pattern
     - Seller reputation fetching
 """
 
@@ -43,18 +43,18 @@ logger = logging.getLogger(__name__)
 
 def research_catalog(db: Session, products: list[Product], skip_existing: bool = True) -> int:
     """
-    Pesquisa mercado para todos os produtos de um catÃ¡logo.
+    Pesquisa mercado para todos os produtos de um catà¡logo.
 
-    Usa Apify BATCH por padrÃ£o: agrupa queries em batches de 40 para
+    Usa Apify BATCH por padrà£o: agrupa queries em batches de 40 para
     reduzir de N chamadas Apify para ceil(N/40) chamadas.
 
     Args:
-        skip_existing: Se True, pula produtos que jÃ¡ tÃªm MarketAnalysis no banco.
+        skip_existing: Se True, pula produtos que jà¡ tàªm MarketAnalysis no banco.
                        Permite retomar pipeline interrompido sem reprocessar tudo.
-                       PadrÃ£o True â use False apenas para forÃ§ar refresh de preÃ§os.
+                       Padrà£o True â use False apenas para forà§ar refresh de preà§os.
 
     Returns:
-        NÃºmero de produtos pesquisados com sucesso (com dados de mercado)
+        Nàºmero de produtos pesquisados com sucesso (com dados de mercado)
     """
     use_apify = bool(settings.APIFY_API_TOKEN)
     use_ml_api = bool(settings.ML_APP_ID and settings.ML_CLIENT_SECRET)
@@ -63,7 +63,7 @@ def research_catalog(db: Session, products: list[Product], skip_existing: bool =
         already_done = sum(1 for p in products if p.market_analysis is not None)
         if already_done:
             logger.info(
-                "Market: pulando %d/%d produtos com MarketAnalysis existente (pipeline resumÃ­vel)",
+                "Market: pulando %d/%d produtos com MarketAnalysis existente (pipeline resumà­vel)",
                 already_done, len(products)
             )
 
@@ -74,32 +74,32 @@ def research_catalog(db: Session, products: list[Product], skip_existing: bool =
         )
         access_token = _try_get_ml_token()
         if access_token:
-            logger.info("Market: token ML disponÃ­vel para enriquecimento sold_quantity")
+            logger.info("Market: token ML disponà­vel para enriquecimento sold_quantity")
         else:
             logger.info(
                 "Market: sem token ML â sold_quantity enriquecido via /items/{id} sem auth "
-                "(funciona para itens pÃºblicos)"
+                "(funciona para itens pàºblicos)"
             )
         return _research_with_apify_batch(db, products, access_token, skip_existing=skip_existing)
 
     elif use_ml_api:
         logger.warning(
             "Market: usando ML API direta (endpoint provavelmente bloqueado). "
-            "Configure APIFY_API_TOKEN para resultados confiÃ¡veis."
+            "Configure APIFY_API_TOKEN para resultados confià¡veis."
         )
         access_token = _try_get_ml_token()
         return _research_with_ml_api(db, products, access_token, skip_existing=skip_existing)
 
     else:
         logger.warning(
-            "Market: nenhuma integraÃ§Ã£o configurada. "
+            "Market: nenhuma integraà§à£o configurada. "
             "Configure APIFY_API_TOKEN (recomendado) ou ML_APP_ID + ML_CLIENT_SECRET. "
-            "Buscando sem autenticaÃ§Ã£o â sold_quantity serÃ¡ 0."
+            "Buscando sem autenticaà§à£o â sold_quantity serà¡ 0."
         )
         return _research_with_ml_api(db, products, access_token=None, skip_existing=skip_existing)
 
 
-# ââ EstratÃ©gia 1: Apify BATCH âââââââââââââââââââââââââââââââââââââââââââââââââ
+# ââ Estratégia 1: Apify BATCH âââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def _research_with_apify_batch(
     db: Session,
@@ -112,17 +112,17 @@ def _research_with_apify_batch(
 
     ARQUITETURA COM CHECKPOINT INCREMENTAL:
         Processa em micro-batches de MICRO_BATCH_SIZE produtos e salva no DB
-        apÃ³s cada micro-batch. Isso garante que se o worker for reiniciado,
+        apóss cada micro-batch. Isso garante que se o worker for reiniciado,
         apenas o micro-batch em andamento precisa ser refeito.
 
-        Sem checkpoint: 403 produtos Ã 20s = ~150 min de trabalho perdido
-        Com checkpoint: mÃ¡ximo 40 produtos Ã 20s = ~14 min de trabalho perdido
+        Sem checkpoint: 403 produtos à 20s = ~150 min de trabalho perdido
+        Com checkpoint: mà¡ximo 40 produtos à 20s = ~14 min de trabalho perdido
 
     Fluxo por micro-batch (40 produtos):
         1. Coleta queries do micro-batch
         2. Dispara search_listings_batch() â 1 chamada Apify (com fallback individual interno)
         3. Processa matching + enriquecimento para cada produto
-        4. Salva no DB (commit) antes de ir para o prÃ³ximo micro-batch
+        4. Salva no DB (commit) antes de ir para o próximo micro-batch
         5. Fase 2 inline: fallback de queries simplificadas no mesmo micro-batch
     """
     from app.integrations.apify_ml import search_listings_batch, BATCH_SIZE
@@ -138,18 +138,18 @@ def _research_with_apify_batch(
     products_to_search = []
     for product in products:
         if skip_existing and product.market_analysis is not None:
-            processed += 1  # Conta como processado (jÃ¡ tem dados)
+            processed += 1  # Conta como processado (jà¡ tem dados)
             continue
         products_to_search.append(product)
 
     already_done = len(products) - len(products_to_search)
 
     if not products_to_search:
-        logger.info("Market [Apify Batch]: todos os produtos jÃ¡ tÃªm dados")
+        logger.info("Market [Apify Batch]: todos os produtos jà¡ tàªm dados")
         return processed
 
     logger.info(
-        "Market [Apify Batch]: %d produtos para pesquisar (%d jÃ¡ existentes, skip=True)",
+        "Market [Apify Batch]: %d produtos para pesquisar (%d jà¡ existentes, skip=True)",
         len(products_to_search), already_done
     )
 
@@ -171,7 +171,7 @@ def _research_with_apify_batch(
             batch_num, total_batches, batch_start + 1, batch_end, len(products_to_search)
         )
 
-        # Queries Ãºnicas deste micro-batch
+        # Queries àºnicas deste micro-batch
         micro_queries_map: dict[str, str] = {
             str(p.id): product_queries[str(p.id)] for p in batch_products
         }
@@ -202,7 +202,7 @@ def _research_with_apify_batch(
                 if simplified != query:
                     products_needing_fallback.append((product, query, simplified))
                 else:
-                    logger.info("Market [Apify]: '%s' â 0 resultados, sem fallback possÃ­vel", query)
+                    logger.info("Market [Apify]: '%s' â 0 resultados, sem fallback possà­vel", query)
                 continue
 
             market_data = _process_apify_result(
@@ -266,17 +266,17 @@ def _research_with_apify_batch(
                         product.search_name
                     )
 
-        # Checkpoint: DB jÃ¡ tem o commit de cada _save_market_result acima.
+        # Checkpoint: DB jà¡ tem o commit de cada _save_market_result acima.
         # Log do progresso acumulado para monitoramento.
         logger.info(
             "Market [Apify Batch]: checkpoint micro-batch %d/%d | "
-            "%d/%d produtos com dados atÃ© agora",
+            "%d/%d produtos com dados até agora",
             batch_num, total_batches,
             processed - already_done, len(products_to_search)
         )
 
     logger.info(
-        "Market [Apify Batch]: concluÃ­do | %d/%d produtos com dados de mercado",
+        "Market [Apify Batch]: concluà­do | %d/%d produtos com dados de mercado",
         processed, len(products)
     )
     return processed
@@ -291,13 +291,13 @@ def _process_apify_result(
     original_search_name: str | None = None,
 ) -> dict | None:
     """
-    Processa resultado Apify de um produto: matching â enriquecimento â agregaÃ§Ã£o.
+    Processa resultado Apify de um produto: matching â enriquecimento â agregaà§à£o.
 
     Reutilizado tanto para queries principais quanto para fallbacks.
 
     Args:
-        is_fallback:          Se True, aplica confianÃ§a mÃ­nima maior (query mais ampla = mais ruÃ­do)
-        original_search_name: Nome original do produto (usado no matching quando Ã© fallback)
+        is_fallback:          Se True, aplica confianà§a mà­nima maior (query mais ampla = mais ruà­do)
+        original_search_name: Nome original do produto (usado no matching quando é fallback)
     """
     from app.integrations.apify_ml import to_ml_listings
     from app.integrations.mercadolivre import aggregate_market_data, enrich_listings_with_sold_quantity
@@ -319,7 +319,7 @@ def _process_apify_result(
     # Converter para MLListings (interface comum com ML API direta)
     ml_listings = to_ml_listings(apify_result.listings)
 
-    # ConfianÃ§a mÃ­nima maior no fallback â query mais ampla traz mais ruÃ­do
+    # Confianà§a mà­nima maior no fallback â query mais ampla traz mais ruà­do
     min_confidence = settings.ML_MIN_MATCH_CONFIDENCE
     if is_fallback:
         min_confidence = min(min_confidence + 0.10, 0.90)
@@ -334,14 +334,14 @@ def _process_apify_result(
 
     if not qualified:
         logger.info(
-            "Market [Apify]: '%s' â 0 anÃºncios apÃ³s matching (confianÃ§a >= %.0f%%)%s",
+            "Market [Apify]: '%s' â 0 anàºncios apóss matching (confianà§a >= %.0f%%)%s",
             query, min_confidence * 100,
             " [FALLBACK]" if is_fallback else "",
         )
         return None
 
     # Enriquecimento com sold_quantity via ML Items API
-    # Nota: sold_quantity = 0 para catalog IDs (/p/MLB...) â ML bloqueia para devs nÃ£o certificados.
+    # Nota: sold_quantity = 0 para catalog IDs (/p/MLB...) â ML bloqueia para devs nà£o certificados.
     # O enriquecimento continua para capturar casos onde retorna listing IDs individuais.
     max_enrich = 10 if is_fallback else 20
     logger.info(
@@ -350,11 +350,11 @@ def _process_apify_result(
     qualified = enrich_listings_with_sold_quantity(
         listings=qualified,
         access_token=ml_access_token,
-        max_to_enrich:min(len(qualified), max_enrich),
+        max_to_enrich=min(len(qualified), max_enrich),
         delay_seconds=0.15,
     )
 
-    # Filtro de vendas apÃ³ enriquecimento
+    # Filtro de vendas após enriquecimento
     if settings.MIN_SALES_THRESHOLD > 0:
         before_filter = len(qualified)
         qualified_filtered = [q for q in qualified if q.sold_quantity >= settings.MIN_SALES_THRESHOLD]
@@ -371,9 +371,9 @@ def _process_apify_result(
                 query, len(qualified), before_filter, settings.MIN_SALES_THRESHOLD
             )
         else:
-            # 0 passaram no filtro â usar todos (sold_quantity indisponÃ­vel ou produto novo)
+            # 0 passaram no filtro â usar todos (sold_quantity indisponà­vel ou produto novo)
             logger.info(
-                "Market [Apify]: '%s' â 0 anÃºncios com vendas >= %d, "
+                "Market [Apify]: '%s' â 0 anàºncios com vendas >= %d, "
                 "usando todos os %d qualificados por matching",
                 query, settings.MIN_SALES_THRESHOLD, len(qualified)
             )
@@ -386,7 +386,7 @@ def _process_apify_result(
 
     logger.info(
         "Market [Apify]: '%s' â %d qualificados | HIGH=%d MEDIUM=%d | "
-        "confianÃ§a=%.0f%% | total_vendas=%d",
+        "confianà§a=%.0f%% | total_vendas=%d",
         query, len(qualified), high_count, medium_count, avg_conf * 100, total_sold
     )
 
@@ -397,10 +397,10 @@ def _process_apify_result(
             listing.sold_quantity, match.score * 100
         )
 
-    # Agregar estatÃ­sticas de mercado
+    # Agregar estatà­sticas de mercado
     result = aggregate_market_data(qualified, matches)
 
-    # Top 5 listings com links para persistÃªncia
+    # Top 5 listings com links para persistàªncia
     top_n = 5
     top_listings = []
     for rank, (listing, match) in enumerate(zip(qualified[:top_n], matches[:top_n]), start=1):
@@ -457,7 +457,7 @@ def _save_market_result(
         )
 
 
-# ââ EstratÃ©gia 2: ML API direta (fallback) ââââââââââââââââââââââââââââââââââââ
+# ââ Estratégia 2: ML API direta (fallback) ââââââââââââââââââââââââââââââââââââ
 
 def _research_with_ml_api(
     db: Session,
@@ -465,12 +465,12 @@ def _research_with_ml_api(
     access_token: str | None,
     skip_existing: bool = True,
 ) -> int:
-    """Pesquisa usando ML API direta (provÃ¡vel bloqueio 403, mantido como fallback)."""
+    """Pesquisa usando ML API direta (provà¡vel bloqueio 403, mantido como fallback)."""
     if access_token:
         logger.info("Market [ML API]: autenticado com OAuth App Token")
     else:
         logger.warning(
-            "Market [ML API]: sem token â sold_quantity serÃ¡ 0. "
+            "Market [ML API]: sem token â sold_quantity serà¡ 0. "
             "Configure APIFY_API_TOKEN para dados reais."
         )
 
@@ -526,7 +526,7 @@ def _research_with_ml_api(
                 time.sleep(settings.ML_REQUEST_DELAY_SECONDS)
 
     logger.info(
-        "Market [ML API]: concluÃ­do | %d/%d produtos com dados",
+        "Market [ML API]: concluà­do | %d/%d produtos com dados",
         processed, len(products)
     )
     return processed
@@ -537,7 +537,7 @@ def _research_product_ml_api(
     access_token: str | None,
     effective_min_sales: int = 0,
 ) -> dict | None:
-    """Pesquisa via ML API direta (lÃ³gica original preservada)."""
+    """Pesquisa via ML API direta (lógica original preservada)."""
     from app.integrations.mercadolivre import aggregate_market_data, search_listings
     from app.services.ml_matching import build_search_query, filter_qualified_listings
 
@@ -555,11 +555,11 @@ def _research_product_ml_api(
         )
 
     if not ml_result.listings:
-        logger.info("Market [ML API]: '%s' â 0 anÃºncios", query)
+        logger.info("Market [ML API]: '%s' â 0 anàºncios", query)
         return None
 
     logger.info(
-        "Market [ML API]: '%s' â %d anÃºncios em %d pÃ¡gina(s)",
+        "Market [ML API]: '%s' â %d anàºncios em %d pà¡gina(s)",
         query, ml_result.total_found, ml_result.pages_fetched
     )
 
@@ -573,7 +573,7 @@ def _research_product_ml_api(
     if not qualified:
         logger.info(
             "Market [ML API]: '%s' â 0 qualificados "
-            "(vendas >= %d, confianÃ§a >= %.0f%%)",
+            "(vendas >= %d, confianà§a >= %.0f%%)",
             query, settings.MIN_SALES_THRESHOLD, settings.ML_MIN_MATCH_CONFIDENCE * 100
         )
         simplified = _simplify_query(query)
@@ -592,7 +592,7 @@ def _research_product_ml_api(
     avg_confidence = sum(m.score for m in matches) / len(matches)
 
     logger.info(
-        "Market [ML API]: '%s' â %d qualificados | HIGH=%d MEDIUM=%d | confianÃ§a=%.0f%%",
+        "Market [ML API]: '%s' â %d qualificados | HIGH=%d MEDIUM=%d | confianà§a=%.0f%%",
         query, len(qualified), high_count, medium_count, avg_confidence * 100
     )
 
@@ -637,17 +637,17 @@ def _retry_ml_api_simplified(
         return None
 
     logger.info(
-        "Market [ML API]: fallback '%s' â %d qualificados (confianÃ§a >= %.0f%%)",
+        "Market [ML API]: fallback '%s' â %d qualificados (confianà§a >= %.0f%%)",
         simplified_query, len(qualified), min_confidence_fallback * 100
     )
 
     return aggregate_market_data(qualified, matches)
 
 
-# ââ UtilitÃ¡rios âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ââ Utilità¡rios âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def _try_get_ml_token() -> str | None:
-    """Tenta obter token ML. Retorna None silenciosamente se nÃ£o configurado."""
+    """Tenta obter token ML. Retorna None silenciosamente se nà£o configurado."""
     if not settings.ML_APP_ID or not settings.ML_CLIENT_SECRET :
         return None
     from app.integrations.mercadolivre import get_app_token
@@ -658,7 +658,7 @@ def _try_get_ml_token() -> str | None:
 
 
 def _simplify_query(query: str) -> str:
-    """Reduz query para 3 primeiros tokens quando nÃ£o encontra resultados."""
+    """Reduz query para 3 primeiros tokens quando nà£o encontra resultados."""
     tokens = query.split()
     if len(tokens) <= 3:
         return query
