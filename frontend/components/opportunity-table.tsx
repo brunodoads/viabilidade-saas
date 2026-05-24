@@ -72,7 +72,7 @@ function ListingsPanel({ listings }: { listings: MarketListing[] }) {
               </p>
               <div className="flex items-center gap-2 mt-0.5">
                 <span className="text-xs text-gray-500">
-                  {lt.sold_quantity.toLocaleString('pt-BR')} vendas
+                  {lt.sold_quantity != null ? lt.sold_quantity.toLocaleString('pt-BR') + ' vendas' : 'vendas n/d'}
                 </span>
                 {lt.free_shipping && (
                   <span className="inline-flex items-center gap-0.5 text-[10px] text-green-600 font-medium">
@@ -152,8 +152,8 @@ export function OpportunityTable({ items, loading, error }: OpportunityTableProp
             <TableHead className="text-right">Custo</TableHead>
             <TableHead className="text-right">
               <span className="flex flex-col items-end leading-tight">
-                <span>Preco ML</span>
-                <span className="text-[10px] font-normal text-gray-400">min / med / max</span>
+                <span>Preco Competitivo</span>
+                <span className="text-[10px] font-normal text-gray-400">P25 / mediana / P75</span>
               </span>
             </TableHead>
             <TableHead className="text-right">Margem</TableHead>
@@ -229,7 +229,7 @@ export function OpportunityTable({ items, loading, error }: OpportunityTableProp
                     <div className="flex flex-col items-end leading-tight">
                       <span className="text-sm font-medium text-gray-800">
                         {avgPrice != null ? formatCurrency(Number(avgPrice)) : '—'}
-                      </span>
+              3          </span>
                       {minPrice != null && maxPrice != null && (
                         <span className="text-[10px] text-gray-400">
                           {formatCurrency(Number(minPrice))} / {formatCurrency(Number(maxPrice))}
