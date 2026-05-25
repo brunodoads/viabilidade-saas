@@ -17,7 +17,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-MAX_VISION_PAGES = 10
+MAX_VISION_PAGES = 50
 VISION_MODEL = "claude-3-5-sonnet-20241022"
 
 # Regex para preco: "PRECO: R$ 33.50" ou "R$ 16,70"
@@ -112,8 +112,11 @@ def _try_pdfplumber(file_path: Path):
         return result
 
     # --- 1a: tabelas com colunas separadas (nome + preco em colunas distintas)
+    # FIX: itera TODAS as tabelas (nao para na primeira) para capturar catalogo inteiro.
+    # PDFs com 1 tabela por pagina precisam acumular produtos de todas as paginas.
     products_found = []
     best_col_mapping = None
+    seen_names_1a: set = set()
 
     for table in all_tables:
         if not table or len(table) < 2:
@@ -126,7 +129,8 @@ def _try_pdfplumber(file_path: Path):
             if not col_mapping.has_required_columns:
                 continue
 
-            best_col_mapping = col_mapping
+            if best_col_mapping is None:
+                best_col_mapping = col_mapping
             data_rows = table[try_row + 1:]
 
             for row in data_rows:
@@ -151,6 +155,13 @@ def _try_pdfplumber(file_path: Path):
                     stats.skipped_invalid_name += 1
                     continue
 
+                # Deduplicar por nome normalizado (evitar duplicatas entre tabelas/paginas)
+                name_key = raw_name.lower().strip()
+                if name_key in seen_names_1a:
+                    stats.skipped_duplicate_sku += 1
+                    continue
+                seen_names_1a.add(name_key)
+
                 cost = normalize_price(cost_str)
                 if not is_valid_cost(cost):
                     stats.skipped_invalid_cost += 1
@@ -166,10 +177,8 @@ def _try_pdfplumber(file_path: Path):
                 })
                 stats.valid_products += 1
 
-            break  # achou cabecalho valido nesta tabela
-
-        if products_found:
-            break
+            break  # achou cabecalho valido nesta tabela — avanca para proxima tabela
+        # REMOVIDO: "if products_found: break" — nao para mais na primeira tabela!
 
     if products_found:
         result.products = products_found
@@ -399,7 +408,7 @@ def _try_claude_vision(file_path: Path):
 
     if len(page_images) == MAX_VISION_PAGES:
         result.add_warning(
-            "PDF tem muitas paginas - processando apenas as primeiras {}.".format(MAX_VISION_PAGES)
+            "PDF tem muitas paginas - processando as primeiras {} (Vision fallback).".format(len(page_images))
         )
 
     logger.info(
