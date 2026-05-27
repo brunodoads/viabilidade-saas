@@ -563,4 +563,52 @@ def enrich_listings_with_sold_quantity(
     enriched_count = 0
     fee_enriched = 0
 
- 
+    for i, listing in enumerate(to_enrich):
+        if not listing.item_id:
+            continue
+
+        details = get_item_details(listing.item_id, access_token)
+        if details:
+            listing.sold_quantity = int(details.get("sold_quantity", 0) or 0)
+            if not listing.condition:
+                listing.condition = details.get("condition", "")
+            if not listing.listing_type:
+                listing.listing_type = details.get("listing_type_id", "")
+            if listing.seller_id == 0:
+                seller = details.get("seller", {}) or {}
+                listing.seller_id = int(seller.get("id", 0) or 0)
+            shipping = details.get("shipping") or {}
+            listing.free_shipping = bool(shipping.get("free_shipping", False))
+            listing.logistic_type = shipping.get("logistic_type") or ""
+            if not listing.category_id:
+                listing.category_id = details.get("category_id", "")
+            enriched_count += 1
+
+        if listing.category_id and listing.price > Decimal("0"):
+            listing.ml_fee_pct = get_listing_fee(listing.price, listing.category_id)
+            if listing.ml_fee_pct is not None:
+                fee_enriched += 1
+
+        if i < len(to_enrich) - 1:
+            time.sleep(delay_seconds)
+
+    logger.info(
+        "ML Items: enriquecidos %d/%d | sold_qty=%d | taxa_real=%d",
+        len(to_enrich), len(to_enrich), enriched_count, fee_enriched
+    )
+
+    return listings
+
+
+def _build_headers(access_token: str | None) -> dict:
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "ViabilidadeSaaS/1.0",
+    }
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+    return headers
+
+
+def _round(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.01"))

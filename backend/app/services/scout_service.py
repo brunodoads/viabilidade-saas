@@ -84,15 +84,32 @@ def parse_catalog(db: Session, catalog: Catalog) -> ParseResult:
         return parse_result
 
     # ── Normalização de nomes via IA ──────────────────────────────────────────
-    raw_names = [p["raw_name"] for p in parse_result.products]
-    normalized_names = _normalize_names(raw_names)
+    # Produtos que já têm normalized_name (ex: CSV com Query ML) não precisam
+    # de normalização — preservar a query precisa de busca (ex: "Exbom CS-M31BT-MAX")
+    needs_norm_indices = [
+        i for i, p in enumerate(parse_result.products)
+        if not p.get("normalized_name")
+    ]
+    already_set = len(parse_result.products) - len(needs_norm_indices)
 
-    for i, norm in enumerate(normalized_names):
-        parse_result.products[i]["normalized_name"] = norm
-        if norm:
-            parse_result.stats.names_normalized += 1
-        else:
-            parse_result.stats.names_fallback += 1
+    if already_set > 0:
+        logger.info(
+            "Scout: %d produtos já têm normalized_name (Query ML) — pulando Claude",
+            already_set,
+        )
+        parse_result.stats.names_normalized += already_set
+
+    if needs_norm_indices:
+        raw_names_to_norm = [parse_result.products[i]["raw_name"] for i in needs_norm_indices]
+        normalized_names = _normalize_names(raw_names_to_norm)
+
+        for list_pos, prod_idx in enumerate(needs_norm_indices):
+            norm = normalized_names[list_pos]
+            parse_result.products[prod_idx]["normalized_name"] = norm
+            if norm:
+                parse_result.stats.names_normalized += 1
+            else:
+                parse_result.stats.names_fallback += 1
 
     # ── Persistir produtos no banco ───────────────────────────────────────────
     if parse_result.products:
@@ -125,16 +142,16 @@ def _parse_xlsx(file_path: Path) -> ParseResult:
 
 def _parse_csv(file_path: Path) -> ParseResult:
     """
-    Parser CSV básico — robusto o suficiente para MVP.
+    Parser CSV robusto — suporta catálogos genéricos e o formato estruturado
+    gerado pela extração Claude (com colunas "Query ML" e "Código Modelo").
 
     Tenta múltiplos separadores e encodings.
-    Usa a mesma lógica de column_detector para flexibilidade.
+    Usa column_detector para mapeamento semântico + detecção direta de colunas
+    de precisão (Query ML, Código Modelo, Marca) que geram a search query ideal.
     """
-    from decimal import Decimal
-
     import pandas as pd
 
-    from app.services.column_detector import detect_columns
+    from app.services.column_detector import detect_columns, normalize_text
     from app.services.parse_result import ParseResult, ParseStats
     from app.services.price_normalizer import is_valid_cost, normalize_price
 
@@ -172,6 +189,37 @@ def _parse_csv(file_path: Path) -> ParseResult:
         result.confidence = ParseConfidence.FAILED
         return result
 
+    # ── Detecção de colunas de precisão (formato Claude-extracted) ─────────────
+    # Colunas específicas do formato gerado pela extração Claude que permitem
+    # montar a query ML exata: "Exbom CS-M31BT-MAX" em vez de "Caixa de Som..."
+    def _find_col(candidates: list[str]) -> str | None:
+        """Acha o primeiro cabeçalho que bate com qualquer candidato (normalizado)."""
+        for h in headers:
+            h_norm = normalize_text(h)
+            for c in candidates:
+                if normalize_text(c) == h_norm or normalize_text(c) in h_norm:
+                    return h
+        return None
+
+    query_ml_col = _find_col(["query ml", "query_ml", "ml query", "busca ml"])
+    model_code_col = _find_col(["código modelo", "codigo modelo", "código do modelo",
+                                 "model code", "modelo", "cod modelo"])
+    brand_col = (
+        headers[col_mapping.supplier]
+        if col_mapping.supplier is not None
+        else _find_col(["marca", "brand", "fabricante"])
+    )
+
+    has_precision_cols = query_ml_col is not None or (
+        model_code_col is not None and brand_col is not None
+    )
+
+    if has_precision_cols:
+        logger.info(
+            "Scout CSV: colunas de precisão detectadas | query_ml=%s | model_code=%s | brand=%s",
+            query_ml_col, model_code_col, brand_col,
+        )
+
     products = []
     for _, row in df.iterrows():
         stats.total_rows_scanned += 1
@@ -199,14 +247,38 @@ def _parse_csv(file_path: Path) -> ParseResult:
             s = str(val).strip() if val else None
             return s if s and s.lower() not in ("nan", "none", "") else None
 
-        products.append({
+        # ── Montar normalized_name de precisão ───────────────────────────────
+        # Prioridade: "Query ML" explícita > "Marca + Código Modelo" > None (Claude normaliza)
+        precision_name: str | None = None
+
+        if query_ml_col:
+            qml = safe_str(row.get(query_ml_col))
+            if qml:
+                precision_name = qml
+
+        if not precision_name and model_code_col and brand_col:
+            model_code = safe_str(row.get(model_code_col))
+            brand = safe_str(row.get(brand_col))
+            if model_code and brand:
+                precision_name = f"{brand} {model_code}"
+            elif model_code:
+                precision_name = model_code
+
+        product_dict: dict = {
             "raw_name": raw_name,
             "cost": cost,
             "sku": safe_str(row[sku_col_name]) if sku_col_name else None,
             "category": safe_str(row[cat_col_name]) if cat_col_name else None,
             "supplier": safe_str(row[sup_col_name]) if sup_col_name else None,
             "currency": "BRL",
-        })
+        }
+
+        # Só definir normalized_name se temos uma query de precisão —
+        # isso protege o valor da sobrescrita pelo Claude na fase de normalização
+        if precision_name:
+            product_dict["normalized_name"] = precision_name
+
+        products.append(product_dict)
         stats.valid_products += 1
 
     result.products = products

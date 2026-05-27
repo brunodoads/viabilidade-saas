@@ -61,16 +61,21 @@ HIGH_WEIGHT_TOKENS = frozenset([
     "vinil", "nitrilo", "latex", "latice", "neoprene", "poliuretano",
     "plastico", "borracha", "silicone", "polietileno", "polipropileno",
     "aluminio", "aco", "inox", "ferro", "cobre", "madeira",
-    "tnt", "spunbond",
-    # Categorias de produto
+    "tnt", "spunbond", "nylon", "poliester", "algodao",
+    # Categorias de produto — singulares (plurais resolvidos por _depluralize_high_weight)
     "luva", "mascara", "avental", "touca", "oculos", "bota", "sapato",
     "caneta", "esferografica", "lapis", "papel", "caixa", "saco", "sacola",
     "frasco", "garrafa", "pote", "bandeja", "embalagem",
     "secador", "liquidificador", "batedeira", "mixer", "ventilador",
+    "escova", "esponja", "pano", "tampa", "tubo", "mangueira",
+    "cabo", "fio", "tomada", "lampada", "led", "bateria", "pilha",
+    "filtro", "tela", "placa", "parafuso", "prego", "fita",
+    "dispenser", "suporte", "organizador", "cesto", "balde",
     # Qualificadores importantes
     "descartavel", "descartaveis", "reutilizavel", "esteril", "esterilizado",
     "industrial", "cirurgico", "hospitalar",
-    "ondulada", "microondulada", "duplo",
+    "ondulada", "microondulada", "duplo", "dupla",
+    "profissional", "premium", "reforçado", "reforcado",
 ])
 
 # ── Padroes de Kit/Combo ───────────────────────────────────────────────────────
@@ -347,15 +352,34 @@ def filter_qualified_listings(
 # Não devem constar na query do ML (consumidor não busca por "cx24").
 
 _PACKAGING_RE = re.compile(
-    r"\bcx\s*\d*\b"           # CX, CX24, CX 24
-    r"|\bfardo\s*\d*\b"       # FARDO, FARDO30
-    r"|\bfd\s*\d*\b"          # FD, FD24
-    r"|\bpct\s*\d*\b"         # PCT, PCT12
-    r"|\bpack\s*\d*\b"        # PACK, PACK6
-    r"|\bfco\s*\d*\b"         # FCO (frasco)
-    r"|\bc/\s*\d+\b"          # C/24, C/ 12
-    r"|\bcom\s+\d+\s*unid\w*" # COM 24 UNIDADES
-    r"|\b\d+\s*x\s*\d+\b",    # 12X1 (12 caixas de 1)
+    r"\bcx\s*\d*\b"                               # CX, CX24, CX 24
+    r"|\bfardo\s*\d*\b"                           # FARDO, FARDO30
+    r"|\bfd\s*\d*\b"                              # FD, FD24
+    r"|\bpct\s*\d*\b"                             # PCT, PCT12
+    r"|\bpack\s*\d*\b"                            # PACK, PACK6
+    r"|\bfco\s*\d*\b"                             # FCO (frasco)
+    r"|\bc/\s*\d+\b"                              # C/24, C/ 12
+    r"|\bcom\s+\d+\s*unid\w*"                     # COM 24 UNIDADES
+    r"|\b\d+\s*x\s*\d+\b"                        # 12X1 (12 caixas de 1)
+    r"|\blote\s*\d*\b"                            # LOTE, LOTE24, LOTE 30
+    r"|\b\d+\s*(?:un|unid)\b"                    # 100un, 500 unid (standalone)
+    r"|\b\d+\s+(?:unidades|pares|pecas|pcs)\b",  # 100 unidades, 50 pares
+    re.IGNORECASE,
+)
+
+# ── Regex de segurança: strip de códigos internos residuais no início do nome ─
+# Fallback caso a normalização da IA não tenha removido o código.
+# Padrões comuns em catálogos de distribuidoras brasileiras:
+#   "10001 - Luva Vinil"   → "Luva Vinil"
+#   "A-045 Frasco"         → "Frasco"
+#   "REF: B23 Caixa"       → "Caixa"
+#   "COD. 1234 Escova"     → "Escova"
+_INTERNAL_CODE_RE = re.compile(
+    r"^\s*(?:"
+    r"\d{4,}\s*[-–\s]+"                        # "10001 - " ou "8875 "
+    r"|[A-Za-z]{1,4}\s*-\s*\d{2,}\s+"              # "A-045 " ou "REF-123 "
+    r"|(?:ref|cod|sku|cab|item)\s*[.:]?\s*\S+\s+"  # "REF: A001 " ou "COD. B-45 "
+    r")",
     re.IGNORECASE,
 )
 
@@ -365,18 +389,26 @@ def build_search_query(product_name: str) -> str:
     Constrói a query de busca otimizada para o ML a partir do nome do produto.
 
     Etapas:
+    0. Stripping de segurança: remove códigos internos residuais no início do nome
+       (fallback caso a normalização da IA não tenha removido o código)
     1. Normalizar texto
-    2. Remover códigos de embalagem de atacado (CX24, FARDO, PCT...)
+    2. Remover códigos de embalagem de atacado (CX24, FARDO, PCT, LOTE, 100un...)
        Esses códigos são irrelevantes para busca no ML (consumidor final)
     3. Remover tokens de quantidade com sufixo de unidade
     4. Limitar a 6 tokens mais relevantes
 
     Exemplo:
+        "10001 - LUVA VINIL P CX100" → "luva vinil p"
         "LEITE CONDENSADO MOCA 395G CX24" → "leite condensado moca 395"
         "OLEO SOJA CARGILL 900ML" → "oleo soja cargill 900"
     """
+    # 0. Remover código interno residual no início (safety net)
+    clean_input = _INTERNAL_CODE_RE.sub("", product_name).strip()
+    if not clean_input:
+        clean_input = product_name
+
     # 1. Normalizar
-    norm = _normalize(product_name)
+    norm = _normalize(clean_input)
 
     # 2. Remover códigos de embalagem de atacado ANTES de tokenizar
     norm_clean = _PACKAGING_RE.sub(" ", norm)
@@ -385,7 +417,8 @@ def build_search_query(product_name: str) -> str:
     tokens = _tokenize(norm_clean)
 
     # 3. Remover tokens de quantidade seguidos de sufixo de unidade
-    quantity_suffixes = {"unid", "unidades", "pcs", "pecas", "pares"}
+    # "un" adicionado: "100 un" (após split pelo normalizador) deve ser removido
+    quantity_suffixes = {"un", "unid", "unidades", "pcs", "pecas", "pares"}
     cleaned_tokens = []
     skip_next = False
 
@@ -404,7 +437,7 @@ def build_search_query(product_name: str) -> str:
 
     if not query:
         # Fallback: 3 primeiras palavras brutas se normalização eliminou tudo
-        words = product_name.split()[:3]
+        words = clean_input.split()[:3]
         query = " ".join(words)
 
     logger.debug("build_search_query: '%s' → '%s'", product_name[:50], query)
@@ -437,13 +470,25 @@ def _weighted_jaccard(tokens_a: list, tokens_b: list) -> float:
 
 # ── Deteccao de penalizadores ─────────────────────────────────────────────────
 
+_MULTI_UNIT_KIT_RE = re.compile(
+    # Detecta kits com quantidade explícita > 1: "Kit 100", "Pack 50", "50 unidades", "Combo 12"
+    r"\b(?:kit|pack|combo|conjunto|pacote)\s+\d+\b"
+    r"|\b\d+\s+(?:unidades|unid|pares|pecas|pcs)\b"
+    r"|\bcaixa\s+(?:com\s+)?\d+\b",
+    re.IGNORECASE,
+)
+
+
 def _check_kit_mismatch(cat_norm: str, ml_norm: str) -> float:
     """
     Penaliza quando o ML é um kit/combo mas o catálogo é item individual.
 
-    Penalidade reduzida (0.20) porque anúncios ML frequentemente mencionam
-    "1 unidade" ou "vendido por unidade" sem ser realmente um kit.
-    Penalidade alta (0.50) apenas para kits com múltiplos itens explícitos (>1).
+    Penalidade GRADUADA por gravidade:
+        0.65 — kit com quantidade explícita > 1 (Kit 100, 50 unidades, Caixa 24)
+               Quase sempre produto errado: preço de atacado vs item individual
+        0.40 — kit genérico sem quantidade explícita (Kit Ferramentas, Combo...)
+               Pode ser legítimo mas é incerto
+        0.0  — catálogo também é kit (cat_is_kit = True): sem penalidade
 
     Nota: catálogos de distribuidoras têm CX/FARDO no nome, mas já foram
     removidos antes do matching pelo build_search_query. O cat_norm aqui
@@ -452,10 +497,17 @@ def _check_kit_mismatch(cat_norm: str, ml_norm: str) -> float:
     """
     ml_is_kit = any(re.search(p, ml_norm) for p in KIT_PATTERNS)
     cat_is_kit = any(re.search(p, cat_norm) for p in KIT_PATTERNS)
-    if ml_is_kit and not cat_is_kit:
-        # Penalidade leve: anúncios "por unidade" são comuns e legítimos
-        return 0.20
-    return 0.0
+
+    if not ml_is_kit or cat_is_kit:
+        return 0.0
+
+    # ML é kit mas catálogo não é — verificar se é kit com quantidade explícita
+    if _MULTI_UNIT_KIT_RE.search(ml_norm):
+        # Kit com quantidade explícita: preço é de atacado, produto errado
+        return 0.65
+
+    # Kit genérico sem quantidade: pode ser legítimo ("Kit Ferramenta Básico")
+    return 0.40
 
 
 def _extract_voltage(text: str) -> str | None:
@@ -611,12 +663,45 @@ def _normalize(text: str) -> str:
     return " ".join(synonymized.split())
 
 
+def _depluralize_high_weight(token: str) -> str:
+    """
+    Normaliza plural → singular para tokens de alto peso semântico.
+
+    Aplica APENAS quando a forma singular está em HIGH_WEIGHT_TOKENS,
+    evitando falsos positivos em palavras comuns.
+
+    Exemplos:
+        "luvas"    → "luva"    (luva ∈ HIGH_WEIGHT_TOKENS)
+        "mascaras" → "mascara" (mascara ∈ HIGH_WEIGHT_TOKENS)
+        "frascos"  → "frasco"  (frasco ∈ HIGH_WEIGHT_TOKENS)
+        "canetas"  → "caneta"  (caneta ∈ HIGH_WEIGHT_TOKENS)
+        "menos"    → "menos"   (base "meno" ∉ HIGH_WEIGHT_TOKENS → sem mudança)
+        "varios"   → "varios"  (base "vario" ∉ HIGH_WEIGHT_TOKENS → sem mudança)
+    """
+    if len(token) <= 3:
+        return token
+    # Plurais femininos em "-as": "luvas" → "luva", "mascaras" → "mascara"
+    if token.endswith("as") and len(token) > 4:
+        base = token[:-1]
+        if base in HIGH_WEIGHT_TOKENS:
+            return base
+    # Plurais gerais em "-s": "frascos" → "frasco", "sacos" → "saco"
+    if token.endswith("s") and not token.endswith("ss") and len(token) > 4:
+        base = token[:-1]
+        if base in HIGH_WEIGHT_TOKENS:
+            return base
+    return token
+
+
 def _tokenize(text: str) -> list:
     """
     Tokeniza texto normalizado em lista de tokens relevantes.
 
     Remove stop words, tokens muito curtos (exceto tamanhos de roupa e digitos)
     e numeros grandes (quantidades > 999).
+
+    Aplica _depluralize_high_weight para normalizar plurais de tokens semânticos,
+    melhorando matching entre "luva" (catálogo) e "luvas" (ML).
     """
     if not text:
         return []
@@ -631,6 +716,6 @@ def _tokenize(text: str) -> list:
             continue
         if token.isdigit() and int(token) > 999:
             continue
-        tokens.append(token)
+        tokens.append(_depluralize_high_weight(token))
 
     return tokens

@@ -67,34 +67,32 @@ def research_catalog(db: Session, products: list[Product], skip_existing: bool =
                 already_done, len(products)
             )
 
-    if use_apify:
+    if use_ml_api:
+        # ML API direta: grátis, sem Apify. Fluxo: search → match → enrich /items/{id}.
+        # sold_quantity=0 nos resultados de busca é normal — enriquecemos após matching.
         logger.info(
-            "Market: usando Apify BATCH para busca ML (contorna bloqueio 403). "
-            "Actor: %s", settings.APIFY_ML_ACTOR_ID
+            "Market: usando ML API direta com enriquecimento via /items/{id} (gratis). "
+            "Fluxo: search -> match -> enrich sold_quantity."
         )
         access_token = _try_get_ml_token()
         if access_token:
-            logger.info("Market: token ML disponà­vel para enriquecimento sold_quantity")
+            logger.info("Market: token ML obtido — rate limits mais altos")
         else:
-            logger.info(
-                "Market: sem token ML â sold_quantity enriquecido via /items/{id} sem auth "
-                "(funciona para itens pàºblicos)"
-            )
-        return _research_with_apify_batch(db, products, access_token, skip_existing=skip_existing)
+            logger.info("Market: sem token ML — sold_quantity via /items/{id} sem auth")
+        return _research_with_ml_api(db, products, access_token, skip_existing=skip_existing)
 
-    elif use_ml_api:
-        logger.warning(
-            "Market: usando ML API direta (endpoint provavelmente bloqueado). "
-            "Configure APIFY_API_TOKEN para resultados confià¡veis."
+    elif use_apify:
+        logger.info(
+            "Market: usando Apify BATCH (ML_APP_ID nao configurado). Actor: %s",
+            settings.APIFY_ML_ACTOR_ID,
         )
         access_token = _try_get_ml_token()
-        return _research_with_ml_api(db, products, access_token, skip_existing=skip_existing)
+        return _research_with_apify_batch(db, products, access_token, skip_existing=skip_existing)
 
     else:
         logger.warning(
-            "Market: nenhuma integraà§à£o configurada. "
-            "Configure APIFY_API_TOKEN (recomendado) ou ML_APP_ID + ML_CLIENT_SECRET. "
-            "Buscando sem autenticaà§à£o â sold_quantity serà¡ 0."
+            "Market: sem credenciais ML nem Apify — buscando sem auth. "
+            "Configure ML_APP_ID + ML_CLIENT_SECRET para resultados confiaveis."
         )
         return _research_with_ml_api(db, products, access_token=None, skip_existing=skip_existing)
 
@@ -457,7 +455,9 @@ def _save_market_result(
         )
 
 
-# ââ Estratégia 2: ML API direta (fallback) ââââââââââââââââââââââââââââââââââââ
+
+
+# ── Estratégia 2: ML API direta (primária, grátis) ───────────────────────────
 
 def _research_with_ml_api(
     db: Session,
@@ -465,17 +465,24 @@ def _research_with_ml_api(
     access_token: str | None,
     skip_existing: bool = True,
 ) -> int:
-    """Pesquisa usando ML API direta (provà¡vel bloqueio 403, mantido como fallback)."""
+    """Pesquisa usando ML API direta + enriquecimento sold_quantity via /items/{id}.
+
+    Fluxo por produto:
+        1. search_listings() -> 50-100 resultados (sold_quantity=0 normal aqui)
+        2. filter_qualified_listings() -> matching semantico
+        3. enrich_listings_with_sold_quantity() -> sold_quantity real via /items/{id}
+        4. filtro por MIN_SALES_THRESHOLD (se > 0)
+        5. aggregate_market_data() -> estatisticas de mercado
+    """
     if access_token:
         logger.info("Market [ML API]: autenticado com OAuth App Token")
     else:
-        logger.warning(
-            "Market [ML API]: sem token â sold_quantity serà¡ 0. "
-            "Configure APIFY_API_TOKEN para dados reais."
+        logger.info(
+            "Market [ML API]: sem token OAuth — sold_quantity via /items/{id} (itens publicos)"
         )
 
-    effective_min_sales = settings.MIN_SALES_THRESHOLD if access_token else 0
     repo = MarketAnalysisRepository(db)
+    listing_repo = MarketListingRepository(db)
     processed = 0
 
     for i, product in enumerate(products):
@@ -492,7 +499,6 @@ def _research_with_ml_api(
             market_data = _research_product_ml_api(
                 product=product,
                 access_token=access_token,
-                effective_min_sales=effective_min_sales,
             )
 
             if market_data is None:
@@ -501,18 +507,7 @@ def _research_with_ml_api(
                     product.search_name
                 )
             else:
-                repo.upsert(
-                    product_id=product.id,
-                    avg_price=market_data["avg_price"],
-                    min_price=market_data["min_price"],
-                    max_price=market_data["max_price"],
-                    total_sellers=market_data["total_sellers"],
-                    total_listings_found=market_data["total_listings_found"],
-                    listings_above_threshold=market_data["listings_above_threshold"],
-                    avg_sold_quantity=market_data.get("avg_sold_quantity"),
-                    total_sold_quantity=market_data.get("total_sold_quantity"),
-                    avg_match_confidence=market_data.get("avg_match_confidence"),
-                )
+                _save_market_result(repo, listing_repo, product, market_data)
                 processed += 1
 
         except Exception as exc:
@@ -526,7 +521,7 @@ def _research_with_ml_api(
                 time.sleep(settings.ML_REQUEST_DELAY_SECONDS)
 
     logger.info(
-        "Market [ML API]: concluà­do | %d/%d produtos com dados",
+        "Market [ML API]: concluido | %d/%d produtos com dados",
         processed, len(products)
     )
     return processed
@@ -535,10 +530,13 @@ def _research_with_ml_api(
 def _research_product_ml_api(
     product: Product,
     access_token: str | None,
-    effective_min_sales: int = 0,
 ) -> dict | None:
-    """Pesquisa via ML API direta (lógica original preservada)."""
-    from app.integrations.mercadolivre import aggregate_market_data, search_listings
+    """Pesquisa via ML API: search -> match -> enrich sold_quantity -> aggregate."""
+    from app.integrations.mercadolivre import (
+        aggregate_market_data,
+        enrich_listings_with_sold_quantity,
+        search_listings,
+    )
     from app.services.ml_matching import build_search_query, filter_qualified_listings
 
     search_name = product.search_name
@@ -550,31 +548,31 @@ def _research_product_ml_api(
 
     if ml_result.api_errors:
         logger.warning(
-            "Market [ML API]: '%s' â erros: %s",
+            "Market [ML API]: '%s' — erros: %s",
             query, "; ".join(ml_result.api_errors)
         )
 
     if not ml_result.listings:
-        logger.info("Market [ML API]: '%s' â 0 anàºncios", query)
+        logger.info("Market [ML API]: '%s' -> 0 anuncios", query)
         return None
 
     logger.info(
-        "Market [ML API]: '%s' â %d anàºncios em %d pà¡gina(s)",
+        "Market [ML API]: '%s' -> %d anuncios em %d pagina(s)",
         query, ml_result.total_found, ml_result.pages_fetched
     )
 
+    # Match primeiro, enriquecer apenas os qualificados (evita chamadas desnecessarias)
     qualified, matches = filter_qualified_listings(
         catalog_name=search_name,
         listings=ml_result.listings,
-        min_sales=effective_min_sales,
+        min_sales=0,  # sold_quantity=0 antes do enriquecimento — filtrar depois
         min_confidence=settings.ML_MIN_MATCH_CONFIDENCE,
     )
 
     if not qualified:
         logger.info(
-            "Market [ML API]: '%s' â 0 qualificados "
-            "(vendas >= %d, confianà§a >= %.0f%%)",
-            query, settings.MIN_SALES_THRESHOLD, settings.ML_MIN_MATCH_CONFIDENCE * 100
+            "Market [ML API]: '%s' -> 0 qualificados (confianca >= %.0f%%)",
+            query, settings.ML_MIN_MATCH_CONFIDENCE * 100
         )
         simplified = _simplify_query(query)
         if simplified != query:
@@ -583,26 +581,82 @@ def _research_product_ml_api(
                 simplified_query=simplified,
                 access_token=access_token,
                 search_name=search_name,
-                effective_min_sales=effective_min_sales,
             )
         return None
 
-    high_count = sum(1 for m in matches if m.tier == "HIGH")
-    medium_count = sum(1 for m in matches if m.tier == "MEDIUM")
-    avg_confidence = sum(m.score for m in matches) / len(matches)
-
+    # Enriquecer com sold_quantity real via /items/{id} (endpoint nao bloqueado)
     logger.info(
-        "Market [ML API]: '%s' â %d qualificados | HIGH=%d MEDIUM=%d | confianà§a=%.0f%%",
-        query, len(qualified), high_count, medium_count, avg_confidence * 100
+        "Market [ML API]: enriquecendo %d listings com sold_quantity via /items/{id}",
+        min(len(qualified), 20)
+    )
+    qualified = enrich_listings_with_sold_quantity(
+        listings=qualified,
+        access_token=access_token,
+        max_to_enrich=min(len(qualified), 20),
+        delay_seconds=0.2,
     )
 
-    for i, (listing, match) in enumerate(zip(qualified[:3], matches[:3])):
+    # Filtro de vendas apos enriquecimento
+    # Se 0 passam no filtro: produto novo ou sold_quantity indisponivel — usa todos
+    if settings.MIN_SALES_THRESHOLD > 0:
+        before_filter = len(qualified)
+        q_filtered = [q for q in qualified if q.sold_quantity >= settings.MIN_SALES_THRESHOLD]
+        m_filtered = [
+            m for q, m in zip(qualified, matches)
+            if q.sold_quantity >= settings.MIN_SALES_THRESHOLD
+        ]
+        if q_filtered:
+            qualified = q_filtered
+            matches = m_filtered
+            logger.info(
+                "Market [ML API]: '%s' -> %d/%d com vendas >= %d",
+                query, len(qualified), before_filter, settings.MIN_SALES_THRESHOLD
+            )
+        else:
+            logger.info(
+                "Market [ML API]: '%s' -> 0 com vendas >= %d, usando %d qualificados por matching",
+                query, settings.MIN_SALES_THRESHOLD, len(qualified)
+            )
+
+    high_count = sum(1 for m in matches if m.tier == "HIGH")
+    medium_count = sum(1 for m in matches if m.tier == "MEDIUM")
+    avg_conf = sum(m.score for m in matches) / len(matches) if matches else 0
+    total_sold = sum(q.sold_quantity for q in qualified)
+
+    logger.info(
+        "Market [ML API]: '%s' -> %d qualificados | HIGH=%d MEDIUM=%d | "
+        "confianca=%.0f%% | total_vendas=%d",
+        query, len(qualified), high_count, medium_count, avg_conf * 100, total_sold
+    )
+
+    for idx, (listing, match) in enumerate(zip(qualified[:3], matches[:3])):
         logger.debug(
-            "Market [ML API]: top%d â '%s' | R$ %.2f | %d vendas | match=%.0f%%",
-            i + 1, listing.title[:50], listing.price, listing.sold_quantity, match.score * 100
+            "Market [ML API]: top%d -> '%s' | R$ %.2f | %d vendas | match=%.0f%%",
+            idx + 1, listing.title[:50], listing.price,
+            listing.sold_quantity, match.score * 100
         )
 
-    return aggregate_market_data(qualified, matches)
+    result = aggregate_market_data(qualified, matches)
+
+    # Top 5 listings para persistencia com links
+    top_listings = []
+    for rank, (listing, match) in enumerate(zip(qualified[:5], matches[:5]), start=1):
+        top_listings.append({
+            "rank_position": rank,
+            "item_id": listing.item_id or "",
+            "title": listing.title or "",
+            "price": listing.price,
+            "sold_quantity": listing.sold_quantity if listing.sold_quantity > 0 else None,
+            "permalink": listing.permalink or None,
+            "thumbnail": listing.thumbnail or None,
+            "match_confidence": round(match.score, 3),
+            "free_shipping": listing.free_shipping,
+            "logistic_type": listing.logistic_type or None,
+            "ml_fee_pct": listing.ml_fee_pct,
+            "category_id": listing.category_id or None,
+        })
+    result["top_listings"] = top_listings
+    return result
 
 
 def _retry_ml_api_simplified(
@@ -610,10 +664,13 @@ def _retry_ml_api_simplified(
     simplified_query: str,
     access_token: str | None,
     search_name: str,
-    effective_min_sales: int = 0,
 ) -> dict | None:
-    """Segunda tentativa com query simplificada via ML API."""
-    from app.integrations.mercadolivre import aggregate_market_data, search_listings
+    """Segunda tentativa com query simplificada + enriquecimento sold_quantity."""
+    from app.integrations.mercadolivre import (
+        aggregate_market_data,
+        enrich_listings_with_sold_quantity,
+        search_listings,
+    )
     from app.services.ml_matching import filter_qualified_listings
 
     logger.info("Market [ML API]: fallback query='%s'", simplified_query)
@@ -628,27 +685,69 @@ def _retry_ml_api_simplified(
     qualified, matches = filter_qualified_listings(
         catalog_name=search_name,
         listings=ml_result.listings,
-        min_sales=effective_min_sales,
+        min_sales=0,
         min_confidence=min_confidence_fallback,
     )
 
     if not qualified:
-        logger.info("Market [ML API]: fallback '%s' â 0 qualificados", simplified_query)
+        logger.info("Market [ML API]: fallback '%s' -> 0 qualificados", simplified_query)
+        return None
+
+    # Enriquecer com sold_quantity real (max 10 no fallback)
+    qualified = enrich_listings_with_sold_quantity(
+        listings=qualified,
+        access_token=access_token,
+        max_to_enrich=min(len(qualified), 10),
+        delay_seconds=0.2,
+    )
+
+    # Filtro de vendas apos enriquecimento
+    if settings.MIN_SALES_THRESHOLD > 0:
+        q_filtered = [q for q in qualified if q.sold_quantity >= settings.MIN_SALES_THRESHOLD]
+        m_filtered = [
+            m for q, m in zip(qualified, matches)
+            if q.sold_quantity >= settings.MIN_SALES_THRESHOLD
+        ]
+        if q_filtered:
+            qualified = q_filtered
+            matches = m_filtered
+
+    if not qualified:
         return None
 
     logger.info(
-        "Market [ML API]: fallback '%s' â %d qualificados (confianà§a >= %.0f%%)",
+        "Market [ML API]: fallback '%s' -> %d qualificados (confianca >= %.0f%%)",
         simplified_query, len(qualified), min_confidence_fallback * 100
     )
 
-    return aggregate_market_data(qualified, matches)
+    result = aggregate_market_data(qualified, matches)
+
+    # Top 5 listings
+    top_listings = []
+    for rank, (listing, match) in enumerate(zip(qualified[:5], matches[:5]), start=1):
+        top_listings.append({
+            "rank_position": rank,
+            "item_id": listing.item_id or "",
+            "title": listing.title or "",
+            "price": listing.price,
+            "sold_quantity": listing.sold_quantity if listing.sold_quantity > 0 else None,
+            "permalink": listing.permalink or None,
+            "thumbnail": listing.thumbnail or None,
+            "match_confidence": round(match.score, 3),
+            "free_shipping": listing.free_shipping,
+            "logistic_type": listing.logistic_type or None,
+            "ml_fee_pct": listing.ml_fee_pct,
+            "category_id": listing.category_id or None,
+        })
+    result["top_listings"] = top_listings
+    return result
 
 
-# ââ Utilità¡rios âââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ── Utilitários ───────────────────────────────────────────────────────────────
 
 def _try_get_ml_token() -> str | None:
-    """Tenta obter token ML. Retorna None silenciosamente se nà£o configurado."""
-    if not settings.ML_APP_ID or not settings.ML_CLIENT_SECRET :
+    """Tenta obter token ML. Retorna None silenciosamente se nao configurado."""
+    if not settings.ML_APP_ID or not settings.ML_CLIENT_SECRET:
         return None
     from app.integrations.mercadolivre import get_app_token
     return get_app_token(
@@ -658,7 +757,7 @@ def _try_get_ml_token() -> str | None:
 
 
 def _simplify_query(query: str) -> str:
-    """Reduz query para 3 primeiros tokens quando nà£o encontra resultados."""
+    """Reduz query para 3 primeiros tokens quando nao encontra resultados."""
     tokens = query.split()
     if len(tokens) <= 3:
         return query

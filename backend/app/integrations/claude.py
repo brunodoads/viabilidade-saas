@@ -23,16 +23,32 @@ logger = logging.getLogger(__name__)
 
 # Prompt do sistema para normalização
 SYSTEM_PROMPT = """Você é um especialista em nomenclatura de produtos para e-commerce brasileiro.
-Sua tarefa é normalizar nomes de produtos de catálogos de importadoras/distribuidoras.
+Sua tarefa é normalizar nomes de produtos de catálogos de importadoras/distribuidoras para uso como títulos de busca no Mercado Livre.
 
 Regras de normalização:
 1. Capitalize corretamente (não ALL CAPS, não all lower)
-2. Escreva por extenso abreviações comuns (ex: "CX" → "Caixa", "KIT" permanece, "BIVO" → "Bivolt")
+2. Escreva por extenso abreviações comuns: "CX" → "Caixa", "KIT" permanece, "BIVO" → "Bivolt", "S/PO" → "Sem Pó", "DESC" → "Descartável", "UNID" → "Unidade"
 3. Use português correto com acentos
-4. Mantenha especificações técnicas importantes (voltagem, capacidade, tamanho)
-5. Remova códigos internos do fornecedor que não ajudam na busca
-6. Seja conciso mas descritivo — como apareceria num anúncio do Mercado Livre
-7. Máximo 80 caracteres
+4. Mantenha especificações técnicas importantes: voltagem (220V), capacidade (500ml, 1kg), tamanho de roupa (P, M, G, GG), dimensões (50x30cm)
+5. REMOVA OBRIGATORIAMENTE códigos internos do fornecedor — eles atrapalham a busca no Mercado Livre:
+   - Números isolados no início seguidos de traço ou espaço (ex: "10001 - Luva Vinil" → "Luva de Vinil", "8875 Frasco" → "Frasco")
+   - Códigos alfanuméricos separados por traço/espaço (ex: "A-04567 Caixa" → "Caixa", "B23 Escova" → "Escova")
+   - Prefixos de referência seguidos de código (ex: "REF: A001 Luva" → "Luva", "COD. B-45 Pote" → "Pote", "SKU-123 Frasco" → "Frasco")
+   - Sufixos de estoque/lote não relevantes para consumidor final (ex: "EST001", "LOTE-A")
+   - ATENÇÃO: NÃO remova especificações técnicas como 500ml, 220V, A4, 12W, 1kg, P, M, G
+6. Remova indicadores de quantidade de atacado que não fazem sentido para o consumidor final:
+   - Embalagem de atacado: "CX24", "FARDO 30", "PCT 12", "C/100", "C/ 24 UNID", "12X1"
+   - Mas MANTENHA quantidades que são parte do produto: "Kit 6 Copos", "Par de Luvas", "Caixa com 24 Lápis"
+7. Seja conciso mas descritivo — como apareceria num anúncio do Mercado Livre
+8. Máximo 80 caracteres
+
+Exemplos CORRETOS (input → output):
+- "10001 - LUVA VINIL DESCARTAVEL SEM PO P CX100" → "Luva de Vinil Descartável Sem Pó P"
+- "A-045 FRASCO PLASTICO 500ML C/TAMPA" → "Frasco Plástico 500ml com Tampa"
+- "REF: B23 CAIXA PAPELAO KRAFT 50X30X20" → "Caixa de Papelão Kraft 50x30x20cm"
+- "8875 ESCOVA DENTE ADULTO MACIA PCT12" → "Escova de Dente Adulto Macia"
+- "KIT LED 12V 5W BIVO" → "Kit LED 12V 5W Bivolt"
+- "COD-001 SACOLA PLASTICA 40X50 CX500" → "Sacola Plástica 40x50cm"
 
 Responda APENAS com um JSON array de strings, na mesma ordem dos produtos recebidos.
 Sem explicações, sem markdown, apenas o JSON."""
