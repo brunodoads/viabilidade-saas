@@ -35,6 +35,9 @@ redis = "^5.2.0"
 # HTTP client
 httpx = "^0.28.0"
 
+# Web scraping (fallback para ML API quando sem certificação)
+beautifulsoup4 = "^4.12.0"
+
 # AI
 anthropic = "^0.40.0"
 

@@ -67,34 +67,38 @@ def research_catalog(db: Session, products: list[Product], skip_existing: bool =
                 already_done, len(products)
             )
 
-    if use_ml_api:
-        # ML API direta: grátis, sem Apify. Fluxo: search → match → enrich /items/{id}.
-        # sold_quantity=0 nos resultados de busca é normal — enriquecemos após matching.
+    if use_apify:
+        # Apify BATCH é a estratégia primária confiável.
+        # ML API /sites/MLB/search retorna 403 para apps não certificados —
+        # Apify contorna esse bloqueio. ML credentials ainda são usadas para
+        # enriquecer sold_quantity via /items/{id} (endpoint público).
         logger.info(
-            "Market: usando ML API direta com enriquecimento via /items/{id} (gratis). "
-            "Fluxo: search -> match -> enrich sold_quantity."
-        )
-        access_token = _try_get_ml_token()
-        if access_token:
-            logger.info("Market: token ML obtido — rate limits mais altos")
-        else:
-            logger.info("Market: sem token ML — sold_quantity via /items/{id} sem auth")
-        return _research_with_ml_api(db, products, access_token, skip_existing=skip_existing)
-
-    elif use_apify:
-        logger.info(
-            "Market: usando Apify BATCH (ML_APP_ID nao configurado). Actor: %s",
+            "Market: usando Apify BATCH (primário). Actor: %s",
             settings.APIFY_ML_ACTOR_ID,
         )
         access_token = _try_get_ml_token()
+        if access_token:
+            logger.info("Market: token ML obtido para enriquecimento /items/{id}")
         return _research_with_apify_batch(db, products, access_token, skip_existing=skip_existing)
 
-    else:
-        logger.warning(
-            "Market: sem credenciais ML nem Apify — buscando sem auth. "
-            "Configure ML_APP_ID + ML_CLIENT_SECRET para resultados confiaveis."
+    elif use_ml_api:
+        # ML API direta: fallback quando Apify não configurado.
+        # Atenção: /sites/MLB/search retorna 403 para apps não certificados.
+        logger.info(
+            "Market: usando ML API direta (fallback — sem APIFY_API_TOKEN). "
+            "Fluxo: search -> match -> enrich sold_quantity via /items/{id}."
         )
-        return _research_with_ml_api(db, products, access_token=None, skip_existing=skip_existing)
+        access_token = _try_get_ml_token()
+        return _research_with_ml_api(db, products, access_token, skip_existing=skip_existing)
+
+    else:
+        # Scraper: gratuito, sem certificação ML, funciona de IP residencial.
+        # Raspa lista.mercadolivre.com.br + enriquece via API pública /items/{id}.
+        logger.info(
+            "Market: usando scraper ML (sem APIFY_API_TOKEN). "
+            "Raspa lista.mercadolivre.com.br + enriquece via /items/{id} (público)."
+        )
+        return _research_with_scraper(db, products, skip_existing=skip_existing)
 
 
 # ââ Estratégia 1: Apify BATCH âââââââââââââââââââââââââââââââââââââââââââââââââ
@@ -723,6 +727,279 @@ def _retry_ml_api_simplified(
     result = aggregate_market_data(qualified, matches)
 
     # Top 5 listings
+    top_listings = []
+    for rank, (listing, match) in enumerate(zip(qualified[:5], matches[:5]), start=1):
+        top_listings.append({
+            "rank_position": rank,
+            "item_id": listing.item_id or "",
+            "title": listing.title or "",
+            "price": listing.price,
+            "sold_quantity": listing.sold_quantity if listing.sold_quantity > 0 else None,
+            "permalink": listing.permalink or None,
+            "thumbnail": listing.thumbnail or None,
+            "match_confidence": round(match.score, 3),
+            "free_shipping": listing.free_shipping,
+            "logistic_type": listing.logistic_type or None,
+            "ml_fee_pct": listing.ml_fee_pct,
+            "category_id": listing.category_id or None,
+        })
+    result["top_listings"] = top_listings
+    return result
+
+
+# ── Estratégia 3: Scraper ML (gratuito, sem certificação) ─────────────────────
+
+def _research_with_scraper(
+    db: Session,
+    products: list[Product],
+    skip_existing: bool = True,
+) -> int:
+    """
+    Pesquisa usando scraper de lista.mercadolivre.com.br
+    + enriquecimento via API pública /items/{id} (sem autenticação).
+
+    Usa o mesmo padrão de checkpoint incremental do Apify Batch:
+    salva no DB após cada produto para permitir retomada.
+    """
+    from app.integrations.ml_scraper import SEARCH_DELAY
+
+    repo = MarketAnalysisRepository(db)
+    listing_repo = MarketListingRepository(db)
+    processed = 0
+
+    products_to_search = [
+        p for p in products
+        if not (skip_existing and p.market_analysis is not None)
+    ]
+    already_done = len(products) - len(products_to_search)
+
+    if already_done:
+        processed = already_done
+        logger.info(
+            "Market [Scraper]: pulando %d/%d produtos já processados",
+            already_done, len(products)
+        )
+
+    if not products_to_search:
+        logger.info("Market [Scraper]: todos os produtos já têm dados")
+        return processed
+
+    logger.info(
+        "Market [Scraper]: %d produtos para pesquisar | ~%.0f min estimados",
+        len(products_to_search),
+        len(products_to_search) * (SEARCH_DELAY + 6) / 60,  # ~6s por enriquecimento
+    )
+
+    for i, product in enumerate(products_to_search):
+        logger.info(
+            "Market [Scraper]: produto %d/%d | '%s'",
+            i + 1, len(products_to_search), product.search_name
+        )
+
+        try:
+            market_data = _research_product_scraper(product=product)
+
+            if market_data is None:
+                logger.warning(
+                    "Market [Scraper]: nenhum dado para '%s'",
+                    product.search_name
+                )
+            else:
+                _save_market_result(repo, listing_repo, product, market_data)
+                processed += 1
+
+        except Exception as exc:
+            logger.error(
+                "Market [Scraper]: erro ao pesquisar '%s': %s",
+                product.search_name, exc, exc_info=True
+            )
+
+        if i < len(products_to_search) - 1:
+            time.sleep(SEARCH_DELAY)
+
+    logger.info(
+        "Market [Scraper]: concluído | %d/%d produtos com dados",
+        processed, len(products)
+    )
+    return processed
+
+
+def _research_product_scraper(product: Product) -> dict | None:
+    """
+    Pesquisa um produto via scraper ML.
+
+    Diferença vs _research_product_ml_api:
+      - sold_quantity já vem populado do scraper (enriquece /items/{id} internamente)
+      - Não precisa de enrich_listings_with_sold_quantity() separado
+    """
+    from app.integrations.ml_scraper import search_listings_scraper
+    from app.integrations.mercadolivre import aggregate_market_data
+    from app.services.ml_matching import build_search_query, filter_qualified_listings
+
+    search_name = product.search_name
+    query = build_search_query(search_name)
+
+    logger.info("Market [Scraper]: query='%s' (original='%s')", query, search_name)
+
+    ml_result = search_listings_scraper(query=query)
+
+    if ml_result.api_errors:
+        logger.warning(
+            "Market [Scraper]: '%s' — erros: %s",
+            query, "; ".join(ml_result.api_errors)
+        )
+
+    if not ml_result.listings:
+        logger.info("Market [Scraper]: '%s' → 0 anúncios", query)
+        simplified = _simplify_query(query)
+        if simplified != query:
+            return _retry_scraper_simplified(
+                product=product,
+                simplified_query=simplified,
+                search_name=search_name,
+            )
+        return None
+
+    logger.info(
+        "Market [Scraper]: '%s' → %d anúncios raspados",
+        query, ml_result.total_found
+    )
+
+    # Matching semântico (sold_quantity já populado — filtramos depois)
+    qualified, matches = filter_qualified_listings(
+        catalog_name=search_name,
+        listings=ml_result.listings,
+        min_sales=0,
+        min_confidence=settings.ML_MIN_MATCH_CONFIDENCE,
+    )
+
+    if not qualified:
+        logger.info(
+            "Market [Scraper]: '%s' → 0 qualificados (confiança >= %.0f%%)",
+            query, settings.ML_MIN_MATCH_CONFIDENCE * 100
+        )
+        simplified = _simplify_query(query)
+        if simplified != query:
+            return _retry_scraper_simplified(
+                product=product,
+                simplified_query=simplified,
+                search_name=search_name,
+            )
+        return None
+
+    # Filtro de vendas (sold_quantity já preenchido pelo scraper + /items/{id})
+    if settings.MIN_SALES_THRESHOLD > 0:
+        before_filter = len(qualified)
+        q_filtered = [q for q in qualified if q.sold_quantity >= settings.MIN_SALES_THRESHOLD]
+        m_filtered = [
+            m for q, m in zip(qualified, matches)
+            if q.sold_quantity >= settings.MIN_SALES_THRESHOLD
+        ]
+        if q_filtered:
+            qualified = q_filtered
+            matches = m_filtered
+            logger.info(
+                "Market [Scraper]: '%s' → %d/%d com vendas >= %d",
+                query, len(qualified), before_filter, settings.MIN_SALES_THRESHOLD
+            )
+        else:
+            logger.info(
+                "Market [Scraper]: '%s' → 0 com vendas >= %d, "
+                "usando %d qualificados por matching",
+                query, settings.MIN_SALES_THRESHOLD, len(qualified)
+            )
+
+    high_count = sum(1 for m in matches if m.tier == "HIGH")
+    medium_count = sum(1 for m in matches if m.tier == "MEDIUM")
+    avg_conf = sum(m.score for m in matches) / len(matches) if matches else 0
+    total_sold = sum(q.sold_quantity for q in qualified)
+
+    logger.info(
+        "Market [Scraper]: '%s' → %d qualificados | HIGH=%d MEDIUM=%d | "
+        "confiança=%.0f%% | total_vendas=%d",
+        query, len(qualified), high_count, medium_count, avg_conf * 100, total_sold
+    )
+
+    for idx, (listing, match) in enumerate(zip(qualified[:3], matches[:3])):
+        logger.debug(
+            "Market [Scraper]: top%d → '%s' | R$ %.2f | %d vendas | match=%.0f%%",
+            idx + 1, listing.title[:50], listing.price,
+            listing.sold_quantity, match.score * 100
+        )
+
+    result = aggregate_market_data(qualified, matches)
+
+    top_listings = []
+    for rank, (listing, match) in enumerate(zip(qualified[:5], matches[:5]), start=1):
+        top_listings.append({
+            "rank_position": rank,
+            "item_id": listing.item_id or "",
+            "title": listing.title or "",
+            "price": listing.price,
+            "sold_quantity": listing.sold_quantity if listing.sold_quantity > 0 else None,
+            "permalink": listing.permalink or None,
+            "thumbnail": listing.thumbnail or None,
+            "match_confidence": round(match.score, 3),
+            "free_shipping": listing.free_shipping,
+            "logistic_type": listing.logistic_type or None,
+            "ml_fee_pct": listing.ml_fee_pct,
+            "category_id": listing.category_id or None,
+        })
+    result["top_listings"] = top_listings
+    return result
+
+
+def _retry_scraper_simplified(
+    product: Product,
+    simplified_query: str,
+    search_name: str,
+) -> dict | None:
+    """Segunda tentativa com query simplificada (3 primeiros tokens)."""
+    from app.integrations.ml_scraper import search_listings_scraper
+    from app.integrations.mercadolivre import aggregate_market_data
+    from app.services.ml_matching import filter_qualified_listings
+
+    logger.info("Market [Scraper]: fallback query='%s'", simplified_query)
+
+    ml_result = search_listings_scraper(query=simplified_query)
+
+    if not ml_result.listings:
+        logger.info("Market [Scraper]: fallback '%s' → 0 anúncios", simplified_query)
+        return None
+
+    min_confidence_fallback = min(settings.ML_MIN_MATCH_CONFIDENCE + 0.10, 0.90)
+
+    qualified, matches = filter_qualified_listings(
+        catalog_name=search_name,
+        listings=ml_result.listings,
+        min_sales=0,
+        min_confidence=min_confidence_fallback,
+    )
+
+    if not qualified:
+        logger.info("Market [Scraper]: fallback '%s' → 0 qualificados", simplified_query)
+        return None
+
+    if settings.MIN_SALES_THRESHOLD > 0:
+        q_filtered = [q for q in qualified if q.sold_quantity >= settings.MIN_SALES_THRESHOLD]
+        m_filtered = [
+            m for q, m in zip(qualified, matches)
+            if q.sold_quantity >= settings.MIN_SALES_THRESHOLD
+        ]
+        if q_filtered:
+            qualified = q_filtered
+            matches = m_filtered
+
+    if not qualified:
+        return None
+
+    logger.info(
+        "Market [Scraper]: fallback '%s' → %d qualificados (confiança >= %.0f%%)",
+        simplified_query, len(qualified), min_confidence_fallback * 100
+    )
+
+    result = aggregate_market_data(qualified, matches)
+
     top_listings = []
     for rank, (listing, match) in enumerate(zip(qualified[:5], matches[:5]), start=1):
         top_listings.append({
