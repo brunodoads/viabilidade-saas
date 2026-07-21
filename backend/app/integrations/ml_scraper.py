@@ -118,7 +118,21 @@ def _get_context():
         logger.info("Playwright: Chromium iniciado (headful - browser visível, ML nao detecta como bot)")
 
     if _api_sess is None:
-        _api_sess = httpx.Client(timeout=ENRICH_TIMEOUT, follow_redirects=True)
+        _api_sess = httpx.Client(
+            timeout=ENRICH_TIMEOUT,
+            follow_redirects=True,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/125.0.0.0 Safari/537.36"
+                ),
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "pt-BR,pt;q=0.9",
+                "Referer": "https://www.mercadolivre.com.br/",
+                "Origin": "https://www.mercadolivre.com.br",
+            },
+        )
 
     if not _warmed:
         _do_warmup()
