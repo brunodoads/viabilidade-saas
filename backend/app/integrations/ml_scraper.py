@@ -61,12 +61,14 @@ def _get_context():
         logger.info("Playwright: iniciando Chromium headless...")
         _pw = _sync_pw().start()
         _browser = _pw.chromium.launch(
-            headless=True,
+            headless=False,   # Browser VISÍVEL — bypassa bot-detection do ML
+                              # Uma janela Chrome vai abrir na barra de tarefas.
+                              # Pode minimizar. Não feche — é o scraper rodando.
             args=[
                 "--no-sandbox",
                 "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
+                "--window-size=1100,700",
+                "--window-position=50,50",
             ],
         )
         _context = _browser.new_context(
@@ -113,7 +115,7 @@ def _get_context():
                     : origQuery(parameters)
             );
         """)
-        logger.info("Playwright: Chromium iniciado (stealth patches aplicados)")
+        logger.info("Playwright: Chromium iniciado (headful - browser visível, ML nao detecta como bot)")
 
     if _api_sess is None:
         _api_sess = httpx.Client(timeout=ENRICH_TIMEOUT, follow_redirects=True)
