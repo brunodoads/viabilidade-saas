@@ -138,18 +138,23 @@ def _do_warmup() -> None:
         logger.info("Playwright: homepage OK | URL: %s", page.url[:80])
         time.sleep(2)
 
-        # Seed: busca simples no www. (não no lista.) para evitar account-verification
-        logger.info("Playwright: warm-up — busca seed 'teclado' no www...")
+        # Seed no lista. para estabelecer cookies antes das buscas reais
+        # Com stealth patches, a verificação deve auto-resolver via JS
+        logger.info("Playwright: warm-up — seed 'teclado' no lista.mercadolivre...")
         page.goto(
-            "https://www.mercadolivre.com.br/busca?q=teclado",
+            "https://lista.mercadolivre.com.br/teclado",
             timeout=SEARCH_TIMEOUT,
             wait_until="domcontentloaded",
         )
         time.sleep(2)
         final_url = page.url
         if "account-verification" in final_url:
-            logger.warning("Playwright: seed redirecionou para verificação — aguardando 8s...")
-            time.sleep(8)
+            logger.info("Playwright: verificação no seed — stealth patches devem resolver, aguardando 20s...")
+            try:
+                page.wait_for_url("*lista.mercadolivre*", timeout=20000)
+                time.sleep(1)
+            except Exception:
+                logger.warning("Playwright: verificação não auto-resolveu no seed")
             final_url = page.url
         logger.info("Playwright: seed OK | URL: %s", final_url[:80])
 
@@ -185,9 +190,9 @@ def _query_to_slug(query: str) -> str:
 
 
 def _query_to_url(query: str) -> str:
-    """URL de busca no www.mercadolivre.com.br (menos gateado que lista.)."""
-    from urllib.parse import quote_plus
-    return f"https://www.mercadolivre.com.br/busca?q={quote_plus(query)}"
+    """URL de busca no lista.mercadolivre.com.br (versão server-rendered do ML Brasil)."""
+    slug = _query_to_slug(query)
+    return f"https://lista.mercadolivre.com.br/{slug}"
 
 
 def _extract_item_id(url: str) -> str | None:
@@ -233,10 +238,11 @@ def _scrape_search_page(query: str) -> list[dict]:
         time.sleep(1.5)  # Aguarda JS inicial
 
         # Se redirecionou para verificação, aguarda redirect automático
+        # Com stealth patches, o JS de verificação do ML deve passar e redirecionar sozinho
         if "account-verification" in page.url:
-            logger.info("Playwright: verificação ML detectada — aguardando auto-redirect...")
+            logger.info("Playwright: verificação ML — aguardando auto-redirect (25s)...")
             try:
-                page.wait_for_url("*mercadolivre.com.br/busca*", timeout=12000)
+                page.wait_for_url("*lista.mercadolivre*", timeout=25000)
                 time.sleep(1.5)
             except Exception:
                 logger.warning("Playwright: sem auto-redirect para '%s'", query)
@@ -268,18 +274,18 @@ def _scrape_search_page(query: str) -> list[dict]:
         current_url = page.url
         logger.info("Playwright: '%s' | URL: %s", query, current_url[:60])
 
-        # Debug: salva screenshot na PRIMEIRA falha de seletor (apenas 1x por sessão)
+        # Debug: salva screenshot da PRIMEIRA busca (para ver o que o browser vê)
         global _debug_screenshot_saved
         if not _debug_screenshot_saved:
             try:
-                import tempfile, os
+                import os
                 debug_dir = r"C:\Users\bruno\Documents\Claude\Projects\IA de Viabilidade de Produtos"
                 shot_path = os.path.join(debug_dir, "debug_ml_screenshot.png")
                 html_path = os.path.join(debug_dir, "debug_ml_page.html")
-                page.screenshot(path=shot_path, full_page=False)
+                page.screenshot(path=shot_path, full_page=True)
                 with open(html_path, "w", encoding="utf-8") as f:
-                    f.write(html[:50000])  # Primeiros 50k chars
-                logger.info("Playwright: DEBUG screenshot salvo em %s", shot_path)
+                    f.write(html[:80000])
+                logger.info("Playwright: DEBUG salvo | URL: %s | shot: %s", page.url[:60], shot_path)
                 _debug_screenshot_saved = True
             except Exception as dbg_exc:
                 logger.warning("Playwright: falha ao salvar debug: %s", dbg_exc)
