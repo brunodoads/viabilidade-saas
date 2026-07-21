@@ -46,6 +46,7 @@ _browser  = None   # chromium browser
 _context  = None   # browser context (mantém cookies entre páginas)
 _api_sess = None   # httpx session para /items/{id}
 _warmed   = False  # se o warm-up já foi feito
+_debug_screenshot_saved = False  # salva screenshot/html só 1x para debug
 
 
 def _get_context():
@@ -231,24 +232,57 @@ def _scrape_search_page(query: str) -> list[dict]:
         page.goto(url, timeout=SEARCH_TIMEOUT, wait_until="domcontentloaded")
         time.sleep(1.5)  # Aguarda JS inicial
 
-        # Se redirecionou para verificação, aguarda redirect automático (stealth patches ajudam)
+        # Se redirecionou para verificação, aguarda redirect automático
         if "account-verification" in page.url:
-            logger.info("Playwright: verificação ML detectada — aguardando auto-redirect (10s)...")
+            logger.info("Playwright: verificação ML detectada — aguardando auto-redirect...")
             try:
                 page.wait_for_url("*mercadolivre.com.br/busca*", timeout=12000)
                 time.sleep(1.5)
             except Exception:
-                logger.warning("Playwright: sem auto-redirect para '%s' — tentando mesmo assim", query)
+                logger.warning("Playwright: sem auto-redirect para '%s'", query)
 
-        # Aguarda React renderizar os cards (www. precisa de mais tempo)
+        # Aguarda networkidle para React terminar de renderizar
         try:
-            page.wait_for_selector("li.ui-search-layout__item", timeout=10000)
+            page.wait_for_load_state("networkidle", timeout=8000)
         except Exception:
-            pass  # Sem resultados ou layout diferente
+            pass
+
+        # Tenta vários seletores possíveis para os cards de produto
+        CARD_SELECTORS = [
+            "li.ui-search-layout__item",
+            "li[class*='ui-search-layout']",
+            ".ui-search-result",
+            ".andes-card",
+            "section.ui-search-result",
+            "[class*='poly-card']",
+        ]
+        for sel in CARD_SELECTORS:
+            try:
+                page.wait_for_selector(sel, timeout=4000)
+                logger.debug("Playwright: seletor '%s' encontrado", sel)
+                break
+            except Exception:
+                pass
 
         html = page.content()
         current_url = page.url
-        logger.info("Playwright: '%s' | URL final: %s", query, current_url[:60])
+        logger.info("Playwright: '%s' | URL: %s", query, current_url[:60])
+
+        # Debug: salva screenshot na PRIMEIRA falha de seletor (apenas 1x por sessão)
+        global _debug_screenshot_saved
+        if not _debug_screenshot_saved:
+            try:
+                import tempfile, os
+                debug_dir = r"C:\Users\bruno\Documents\Claude\Projects\IA de Viabilidade de Produtos"
+                shot_path = os.path.join(debug_dir, "debug_ml_screenshot.png")
+                html_path = os.path.join(debug_dir, "debug_ml_page.html")
+                page.screenshot(path=shot_path, full_page=False)
+                with open(html_path, "w", encoding="utf-8") as f:
+                    f.write(html[:50000])  # Primeiros 50k chars
+                logger.info("Playwright: DEBUG screenshot salvo em %s", shot_path)
+                _debug_screenshot_saved = True
+            except Exception as dbg_exc:
+                logger.warning("Playwright: falha ao salvar debug: %s", dbg_exc)
 
     except Exception as exc:
         logger.error("Playwright: erro navegando '%s': %s", query, exc)
