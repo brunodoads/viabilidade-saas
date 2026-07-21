@@ -79,9 +79,40 @@ def _get_context():
             java_script_enabled=True,
             extra_http_headers={
                 "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             },
         )
-        logger.info("Playwright: Chromium iniciado")
+        # Stealth patches — escondem sinais de automação do Playwright
+        _context.add_init_script("""
+            // Remove webdriver flag (o sinal mais óbvio)
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+            // Simula plugins reais (headless tem 0)
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [
+                    { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+                    { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+                    { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
+                ]
+            });
+
+            // Simula languages
+            Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en-US', 'en'] });
+
+            // Chrome runtime (ausente em headless)
+            if (!window.chrome) {
+                window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){}, app: {} };
+            }
+
+            // Permissions API — headless retorna 'denied', real retorna 'prompt'
+            const origQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications'
+                    ? Promise.resolve({ state: Notification.permission })
+                    : origQuery(parameters)
+            );
+        """)
+        logger.info("Playwright: Chromium iniciado (stealth patches aplicados)")
 
     if _api_sess is None:
         _api_sess = httpx.Client(timeout=ENRICH_TIMEOUT, follow_redirects=True)
@@ -93,7 +124,10 @@ def _get_context():
 
 
 def _do_warmup() -> None:
-    """Visita ML homepage + página de busca para estabelecer sessão e cookies."""
+    """
+    Visita ML para estabelecer sessão e cookies.
+    Usa www.mercadolivre.com.br que é menos gateado que lista.mercadolivre.com.br.
+    """
     global _warmed
     page = _context.new_page()
     try:
@@ -101,17 +135,22 @@ def _do_warmup() -> None:
         page.goto("https://www.mercadolivre.com.br/", timeout=20000)
         page.wait_for_load_state("networkidle", timeout=15000)
         logger.info("Playwright: homepage OK | URL: %s", page.url[:80])
-        time.sleep(1.5)
+        time.sleep(2)
 
-        # Visita uma busca genérica para estabelecer contexto de search
-        logger.info("Playwright: warm-up — busca seed 'teclado'...")
+        # Seed: busca simples no www. (não no lista.) para evitar account-verification
+        logger.info("Playwright: warm-up — busca seed 'teclado' no www...")
         page.goto(
-            "https://lista.mercadolivre.com.br/teclado",
+            "https://www.mercadolivre.com.br/busca?q=teclado",
             timeout=SEARCH_TIMEOUT,
             wait_until="domcontentloaded",
         )
         time.sleep(2)
-        logger.info("Playwright: seed OK | URL: %s", page.url[:80])
+        final_url = page.url
+        if "account-verification" in final_url:
+            logger.warning("Playwright: seed redirecionou para verificação — aguardando 8s...")
+            time.sleep(8)
+            final_url = page.url
+        logger.info("Playwright: seed OK | URL: %s", final_url[:80])
 
     except Exception as exc:
         logger.warning("Playwright: warm-up falhou (%s) — continuando", exc)
@@ -137,10 +176,17 @@ def reset_session() -> None:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _query_to_slug(query: str) -> str:
+    """Converte query para slug URL (para lista.mercadolivre — não usado agora)."""
     slug = query.lower().strip()
     slug = re.sub(r"[^\w\s-]", "", slug)
     slug = re.sub(r"[\s_]+", "-", slug).strip("-")
     return slug
+
+
+def _query_to_url(query: str) -> str:
+    """URL de busca no www.mercadolivre.com.br (menos gateado que lista.)."""
+    from urllib.parse import quote_plus
+    return f"https://www.mercadolivre.com.br/busca?q={quote_plus(query)}"
 
 
 def _extract_item_id(url: str) -> str | None:
@@ -177,33 +223,32 @@ def _scrape_search_page(query: str) -> list[dict]:
     Playwright executa JS → passa pela verificação ML → obtém resultados reais.
     """
     context = _get_context()
-    slug    = _query_to_slug(query)
-    url     = f"https://lista.mercadolivre.com.br/{slug}"
+    url     = _query_to_url(query)
     page    = context.new_page()
     products: list[dict] = []
 
     try:
         page.goto(url, timeout=SEARCH_TIMEOUT, wait_until="domcontentloaded")
-        time.sleep(1.5)  # Aguarda JS de verificação rodar
+        time.sleep(1.5)  # Aguarda JS inicial
 
-        # Se redirecionou para verificação, aguarda redirect de volta
+        # Se redirecionou para verificação, aguarda redirect automático (stealth patches ajudam)
         if "account-verification" in page.url:
-            logger.info("Playwright: verificação ML detectada — aguardando redirect...")
+            logger.info("Playwright: verificação ML detectada — aguardando auto-redirect (10s)...")
             try:
-                page.wait_for_url("*lista.mercadolivre*", timeout=12000)
+                page.wait_for_url("*mercadolivre.com.br/busca*", timeout=12000)
                 time.sleep(1.5)
             except Exception:
-                logger.warning("Playwright: timeout aguardando redirect de verificação para '%s'", query)
+                logger.warning("Playwright: sem auto-redirect para '%s' — tentando mesmo assim", query)
 
-        # Aguarda aparecer um card de produto (ou timeout curto)
+        # Aguarda React renderizar os cards (www. precisa de mais tempo)
         try:
-            page.wait_for_selector("li.ui-search-layout__item", timeout=6000)
+            page.wait_for_selector("li.ui-search-layout__item", timeout=10000)
         except Exception:
             pass  # Sem resultados ou layout diferente
 
         html = page.content()
         current_url = page.url
-        logger.debug("Playwright: '%s' | URL final: %s", query, current_url[:80])
+        logger.info("Playwright: '%s' | URL final: %s", query, current_url[:60])
 
     except Exception as exc:
         logger.error("Playwright: erro navegando '%s': %s", query, exc)
