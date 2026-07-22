@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 ITEMS_API      = "https://api.mercadolibre.com/items"
 SEARCH_DELAY   = 2.0   # segundos entre produtos (comportamento humano)
 ENRICH_DELAY   = 0.4   # segundos entre chamadas /items/{id}
-MAX_ENRICH     = 0     # 0 = desativa enrichment via /items/{id} (API retorna 403 sem certificacao ML)
+MAX_ENRICH     = 5     # itens a enriquecer por busca (cookies do browser passados ao httpx)
 SEARCH_TIMEOUT = 25000  # ms — timeout Playwright por navegação
 ENRICH_TIMEOUT = 10     # s — timeout httpx
 
@@ -178,7 +178,29 @@ def _do_warmup() -> None:
         logger.warning("Playwright: warm-up falhou (%s) — continuando", exc)
     finally:
         page.close()
+
+    # Sincroniza cookies do browser para o httpx DEPOIS de estabelecer sessão
+    _sync_browser_cookies()
     _warmed = True
+
+
+def _sync_browser_cookies() -> None:
+    """
+    Copia cookies do Playwright BrowserContext para o httpx session.
+    Após o browser visitar ML (headful, sessão real), os cookies de auth
+    ficam no context. Passando-os ao httpx, as chamadas à /items/{id}
+    chegam autenticadas e passam o bloqueio 403.
+    """
+    if _context is None or _api_sess is None:
+        return
+    try:
+        cookies = _context.cookies()
+        for ck in cookies:
+            # httpx.Client.cookies é um Cookies object que aceita set()
+            _api_sess.cookies.set(ck["name"], ck["value"])
+        logger.info("Playwright: %d cookies copiados browser→httpx", len(cookies))
+    except Exception as exc:
+        logger.warning("Playwright: falha ao copiar cookies: %s", exc)
 
 
 def reset_session() -> None:
@@ -418,10 +440,19 @@ def search_listings_scraper(
         result.api_errors.append("Nenhum resultado")
         return result
 
+    consecutive_failures = 0
     for item in raw[:MAX_ENRICH]:
         time.sleep(ENRICH_DELAY)
         enriched = _enrich_item(item["item_id"])
-        item.update(enriched)
+        if enriched:
+            item.update(enriched)
+            consecutive_failures = 0
+        else:
+            consecutive_failures += 1
+            if consecutive_failures >= 2:
+                # 2 falhas seguidas = cookies nao funcionaram → aborta enriquecimento
+                logger.debug("Enriquecimento: 2 falhas consecutivas — abortando para esta busca")
+                break
 
     for item in raw:
         sold = item.get("sold_quantity", 0)
