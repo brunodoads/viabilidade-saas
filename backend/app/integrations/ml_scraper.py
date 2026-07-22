@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 ITEMS_API      = "https://api.mercadolibre.com/items"
 SEARCH_DELAY   = 2.0   # segundos entre produtos (comportamento humano)
 ENRICH_DELAY   = 0.4   # segundos entre chamadas /items/{id}
-MAX_ENRICH     = 15    # itens a enriquecer por busca
+MAX_ENRICH     = 0     # 0 = desativa enrichment via /items/{id} (API retorna 403 sem certificacao ML)
 SEARCH_TIMEOUT = 25000  # ms — timeout Playwright por navegação
 ENRICH_TIMEOUT = 10     # s — timeout httpx
 
