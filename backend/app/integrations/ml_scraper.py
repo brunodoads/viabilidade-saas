@@ -276,7 +276,6 @@ def _scrape_search_page(query: str) -> list[dict]:
         time.sleep(1.5)  # Aguarda JS inicial
 
         # Se redirecionou para verificação, aguarda redirect automático
-        # Com stealth patches, o JS de verificação do ML deve passar e redirecionar sozinho
         if "account-verification" in page.url:
             logger.info("Playwright: verificação ML — aguardando auto-redirect (25s)...")
             try:
@@ -285,31 +284,32 @@ def _scrape_search_page(query: str) -> list[dict]:
             except Exception:
                 logger.warning("Playwright: sem auto-redirect para '%s'", query)
 
-        # Aguarda networkidle para React terminar de renderizar
+        # Sincroniza cookies após esta navegação (inclui cookies da verificação)
+        _sync_browser_cookies()
+
+        # Se ainda na verificação após timeout, retorna vazio (não tem produto para parsear)
+        current_url = ""
         try:
-            page.wait_for_load_state("networkidle", timeout=8000)
+            current_url = page.url
+        except Exception:
+            pass
+        if "account-verification" in current_url or "login" in current_url:
+            logger.warning("Playwright: ainda em verificação/login para '%s' — retornando vazio", query)
+            return []
+
+        # Aguarda cards aparecerem
+        try:
+            page.wait_for_selector("li.ui-search-layout__item", timeout=6000)
         except Exception:
             pass
 
-        # Tenta vários seletores possíveis para os cards de produto
-        CARD_SELECTORS = [
-            "li.ui-search-layout__item",
-            "li[class*='ui-search-layout']",
-            ".ui-search-result",
-            ".andes-card",
-            "section.ui-search-result",
-            "[class*='poly-card']",
-        ]
-        for sel in CARD_SELECTORS:
-            try:
-                page.wait_for_selector(sel, timeout=4000)
-                logger.debug("Playwright: seletor '%s' encontrado", sel)
-                break
-            except Exception:
-                pass
+        # Captura HTML — protegido contra page still navigating
+        try:
+            html = page.content()
+        except Exception as content_exc:
+            logger.warning("Playwright: page.content() falhou ('%s'): %s", query, content_exc)
+            return []
 
-        html = page.content()
-        current_url = page.url
         logger.info("Playwright: '%s' | URL: %s", query, current_url[:60])
 
         # Debug: salva screenshot da PRIMEIRA busca (para ver o que o browser vê)
